@@ -1,0 +1,18 @@
+return {
+  _all = {
+    lua = "nlua",
+    lpath = "lua/?.lua;lua/?/init.lua;spec/?.lua",
+    helper = "spec/helpers/init.lua",
+    -- busted would restore package.loaded after each spec file, unloading the
+    -- vim.lsp modules Neovim loaded lazily and leaving their state split in two
+    ["auto-insulate"] = false,
+  },
+  -- fast and self-contained: `lx test`
+  default = {
+    ROOT = { "spec/unit", "spec/protocol" },
+  },
+  -- needs uv, downloads pinned jupytext and language servers: `lx test -- --run=e2e`
+  e2e = {
+    ROOT = { "spec/oracle", "spec/e2e" },
+  },
+}

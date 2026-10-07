@@ -1,0 +1,20 @@
+package = "notebook-lsp.nvim"
+version = "0.1.0"
+lua = "5.1"
+
+[description]
+summary = "LSP for jupytext Markdown notebooks in Neovim, through the LSP notebook protocol"
+maintainer = "datwaft"
+labels = [ "neovim", "lsp", "jupyter", "jupytext" ]
+
+[dependencies]
+
+[test]
+type = "busted-nlua"
+
+[build]
+type = "builtin"
+
+[test_dependencies]
+busted = "2.3.0-1"
+nlua = "0.3.2-1"
