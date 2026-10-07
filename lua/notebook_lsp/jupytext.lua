@@ -1,5 +1,8 @@
 -- Reads jupytext Markdown notebooks the way jupytext does
 -- (jupytext/cell_reader.py, MarkdownCellReader).
+--
+-- Ported from jupytext, Copyright (c) 2018-2026 Marc Wouts, MIT License.
+-- See THIRD_PARTY_NOTICES.
 local M = {}
 
 ---@class notebook_lsp.jupytext.Cell

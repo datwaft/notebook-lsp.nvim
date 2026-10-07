@@ -6,6 +6,7 @@ lua = "5.1"
 summary = "LSP for jupytext Markdown notebooks in Neovim, through the LSP notebook protocol"
 maintainer = "datwaft"
 labels = [ "neovim", "lsp", "jupyter", "jupytext" ]
+license = "MIT"
 
 [dependencies]
 

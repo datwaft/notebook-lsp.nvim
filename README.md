@@ -37,3 +37,9 @@ lx test -- --run=e2e    # oracle and end-to-end tests: need uv
 The oracle and end-to-end tests run pinned versions of jupytext and the
 language servers through `uvx` (see `spec/helpers/tools.lua`), with uv's cache
 in `.tests/`.
+
+## License
+
+[MIT](LICENSE). The notebook cell reader is ported from
+[jupytext](https://github.com/mwouts/jupytext) (MIT, © Marc Wouts); see
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
