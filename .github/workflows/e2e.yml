@@ -1,0 +1,59 @@
+name: E2E
+
+# Oracle and end-to-end tests: pinned jupytext and language servers through uvx.
+
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - lua/**
+      - spec/**
+      - .busted
+      - lux.toml
+      - lux.lock
+      - .github/workflows/e2e.yml
+  pull_request:
+    paths: *paths
+  schedule:
+    # Neovim nightly changes every day
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: nightly
+
+      - uses: lumen-oss/gh-actions-lux@v1
+        with:
+          version: 0.47.0
+
+      - uses: astral-sh/setup-uv@v10
+
+      # The specs point uv's cache and Python installs at .tests/uv (see
+      # spec/helpers/tools.lua), so setup-uv's own cache doesn't apply
+      - uses: actions/cache@v6
+        with:
+          path: .tests/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('spec/helpers/tools.lua') }}
+
+      - name: Run tests
+        run: lx test -- --run=e2e
