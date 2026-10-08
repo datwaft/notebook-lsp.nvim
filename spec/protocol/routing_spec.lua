@@ -111,9 +111,8 @@ describe("request routing", function()
 
   it("maps resolved completion items to the cell of the completion", function()
     local bufnr = protocol.open_example(env)
-    local item = { label = "OrderedDict", data = { opaque = true } }
     handlers["textDocument/completion"] = function()
-      return { item }
+      return { { label = "OrderedDict", data = { opaque = true } } }
     end
     handlers["completionItem/resolve"] = function(params)
       return vim.tbl_extend("force", params, {
@@ -121,10 +120,30 @@ describe("request routing", function()
       })
     end
     local client = protocol.wait_attached(env, bufnr)
-    request(bufnr, "textDocument/completion", protocol.position(bufnr, rows.cell2 + 1, "x"))
+    local item = request(bufnr, "textDocument/completion", protocol.position(bufnr, rows.cell2 + 1, "x"))[1]
     local resolved = assert(client:request_sync("completionItem/resolve", item, 1000, bufnr)).result
     assert.same(range(rows.cell2, 0, 0), resolved.additionalTextEdits[1].range)
     assert.same({ opaque = true }, env.server:wait_for("completionItem/resolve").data)
+  end)
+
+  -- A position in a cell doesn't say which cell: the items must
+  it("resolves items from several cells, each in its own cell", function()
+    local bufnr, cells = protocol.open_example(env)
+    handlers["textDocument/codeLens"] = function(params)
+      return { { range = range(0, 0, 1), data = { cell = params.textDocument.uri } } }
+    end
+    handlers["codeLens/resolve"] = function(lens)
+      return vim.tbl_extend("force", lens, { command = { title = lens.data.cell, command = "" } })
+    end
+    local client = protocol.wait_attached(env, bufnr)
+    local lenses = request(bufnr, "textDocument/codeLens")
+    assert.same({ range(rows.cell1, 0, 1), range(rows.cell2, 0, 1) }, {
+      lenses[1].range,
+      lenses[2].range,
+    })
+    local resolved = assert(client:request_sync("codeLens/resolve", lenses[2], 1000, bufnr)).result
+    assert.same(range(rows.cell2, 0, 1), resolved.range)
+    assert.equal(cells[2], resolved.command.title)
   end)
 
   it("formats every cell and applies the edits to the notebook only", function()
