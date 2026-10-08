@@ -108,8 +108,11 @@ end)
 
 describe("pulled diagnostics", function()
   local env ---@type ProtocolEnv
+  -- The related reports the server adds to its report for a document, if any
+  local related ---@type (fun(uri: string): table<string, lsp.FullDocumentDiagnosticReport>?)?
 
   before_each(function()
+    related = nil
     local capabilities = vim.deepcopy(fake_server.capabilities)
     capabilities.diagnosticProvider = { interFileDependencies = false, workspaceDiagnostics = false }
     env = protocol.start({
@@ -120,7 +123,13 @@ describe("pulled diagnostics", function()
             ["1"] = { diagnostic(0, 7, "unused") },
             ["2"] = { diagnostic(1, 11, "undefined") },
           }
-          return { kind = "full", resultId = "r", items = items[params.textDocument.uri:match("#c(%d+)$")] }
+          local uri = params.textDocument.uri
+          return {
+            kind = "full",
+            resultId = "r",
+            items = items[uri:match("#c(%d+)$")] or {},
+            relatedDocuments = related and related(uri),
+          }
         end,
       },
     })
@@ -175,5 +184,62 @@ describe("pulled diagnostics", function()
     })
     vim.wait(100)
     assert.equal(2, #vim.diagnostic.get(bufnr))
+  end)
+
+  --- Whether Neovim has a buffer for a cell, which only the plugin knows about.
+  local function has_cell_buffer()
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.startswith(vim.api.nvim_buf_get_name(buf), "vscode-notebook-cell:") then
+        return true
+      end
+    end
+    return false
+  end
+
+  -- Related reports about cells are left out: replacing the notebook's diagnostics with a
+  -- cell's would lose the other cells'. Those about other files are Neovim's to show.
+  it("keeps the related reports of a cell's report that are about other files", function()
+    local utils = vim.uri_from_fname(env.dir .. "/utils.py")
+    related = function(uri)
+      if uri:match("#c1$") then
+        return {
+          [(uri:gsub("#c1$", "#c2"))] = { kind = "full", items = { diagnostic(0, 0, "related to cell 2") } },
+          [utils] = { kind = "full", items = { diagnostic(0, 0, "in utils") } },
+        }
+      end
+    end
+    local bufnr = protocol.open_example(env)
+    wait_shown(bufnr, {
+      { lnum = rows.cell1, col = 7, message = "unused" },
+      { lnum = rows.cell2 + 1, col = 11, message = "undefined" },
+    })
+    wait_shown(vim.uri_to_bufnr(utils), { { lnum = 0, col = 0, message = "in utils" } })
+    assert.is_false(has_cell_buffer())
+  end)
+
+  it("leaves out related reports about cells from the reports of other files", function()
+    local bufnr, cells = protocol.open_example(env)
+    wait_shown(bufnr, {
+      { lnum = rows.cell1, col = 7, message = "unused" },
+      { lnum = rows.cell2 + 1, col = 11, message = "undefined" },
+    })
+    related = function(uri)
+      if vim.endswith(uri, "utils.py") then
+        return { [cells[1]] = { kind = "full", items = { diagnostic(1, 0, "related to cell 1") } } }
+      end
+    end
+    local utils = protocol.open(env, "utils.py", { "x = 1" })
+    protocol.wait_attached(env, utils)
+    vim.wait(1000, function()
+      return #vim.tbl_filter(function(params)
+        return params.textDocument.uri == vim.uri_from_bufnr(utils)
+      end, env.server:received("textDocument/diagnostic")) > 0
+    end)
+    vim.wait(100) -- for the report to be shown
+    assert.is_false(has_cell_buffer())
+    assert.same({
+      { lnum = rows.cell1, col = 7, message = "unused" },
+      { lnum = rows.cell2 + 1, col = 11, message = "undefined" },
+    }, shown(bufnr))
   end)
 end)

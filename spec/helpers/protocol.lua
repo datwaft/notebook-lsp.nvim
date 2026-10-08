@@ -95,6 +95,11 @@ function M.stop()
   for _, client in ipairs(vim.lsp.get_clients({ name = env.name })) do
     client:stop(true)
   end
+  -- Neovim detaches the clients from buffers in callbacks it schedules: wiping
+  -- the buffers first would make those fail during the next test
+  vim.wait(1000, function()
+    return #vim.lsp.get_clients({ name = env.name, _uninitialized = true }) == 0
+  end, 5)
   vim.cmd("silent! %bwipeout!")
   vim.fn.delete(env.dir, "rf")
 end
