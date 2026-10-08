@@ -1,5 +1,5 @@
 -- Sets up protocol tests: a fake server registered with `vim.lsp.config`,
--- extended to notebooks by setup(), and a project directory to open files in.
+-- extended to notebooks, and a project directory to open files in.
 local fake_server = require("helpers.fake_server")
 
 local M = {}
@@ -61,10 +61,13 @@ end
 
 local current ---@type ProtocolEnv?
 
---- Starts the environment of a test. Stop it with M.stop() in after_each.
----@param opts? {capabilities?: lsp.ServerCapabilities, handlers?: table<string, fun(params: any): any>}
+--- Starts the environment of a test: a fake Python server, configured the way
+--- nvim-lspconfig would, extended to notebooks the way plugin/ extends the
+--- servers it knows, and enabled. Stop it with M.stop() in after_each.
+---@param opts? {capabilities?: lsp.ServerCapabilities, handlers?: table<string, fun(params: any): any>, enable?: boolean}
 ---@return ProtocolEnv
 function M.start(opts)
+  opts = opts or {}
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, "p")
   local env = {
@@ -77,8 +80,10 @@ function M.start(opts)
   current = env -- before anything can fail, so that M.stop() cleans up
   vim.fn.writefile({}, env.dir .. "/pyproject.toml")
   vim.lsp.config(env.name, { cmd = env.server.cmd, filetypes = { "python" }, root_markers = { "pyproject.toml" } })
-  require("notebook_lsp").setup({ servers = { env.name } })
-  vim.lsp.enable(env.name)
+  require("notebook_lsp").extend(env.name, { "python" })
+  if opts.enable ~= false then
+    vim.lsp.enable(env.name)
+  end
   return env
 end
 

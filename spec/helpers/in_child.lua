@@ -5,20 +5,26 @@ local tools = require("helpers.tools")
 
 local M = {}
 
---- Configures the pinned servers the way nvim-lspconfig would, extends them to
---- notebooks with setup(), and enables them.
+--- Loads the plugin the way Neovim does at startup, configures the pinned
+--- servers the way nvim-lspconfig does (lsp/<name>.lua on the runtimepath),
+--- and enables them.
 ---@param servers string[]
 function M.setup(servers)
   vim.cmd("filetype on")
+  vim.cmd.runtime("plugin/notebook_lsp.lua")
+  local runtime = vim.fn.tempname()
+  vim.fn.mkdir(runtime .. "/lsp", "p")
   for _, name in ipairs(servers) do
-    vim.lsp.config(name, {
+    local config = {
       cmd = tools.servers[name],
       cmd_env = tools.env,
       filetypes = { "python" },
       root_markers = { "pyproject.toml" },
-    })
+    }
+    local lines = vim.split("return " .. vim.inspect(config), "\n", { plain = true })
+    vim.fn.writefile(lines, ("%s/lsp/%s.lua"):format(runtime, name))
   end
-  require("notebook_lsp").setup({ servers = servers })
+  vim.opt.runtimepath:append(runtime)
   vim.lsp.enable(servers)
 end
 
