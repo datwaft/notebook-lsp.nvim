@@ -1,3 +1,4 @@
+local fake_server = require("helpers.fake_server")
 local protocol = require("helpers.protocol")
 
 local rows = protocol.example.rows
@@ -411,5 +412,99 @@ describe("request routing", function()
     local lenses = request(bufnr, "textDocument/codeLens")
     assert.same(range(rows.cell1 + 1, 0, 1), lenses[1].range)
     assert.same(arguments, lenses[1].command.arguments)
+  end)
+
+  -- Each cell gets the parts of the ranges in it, as for a single range.
+  it("formats several ranges, each cell with its parts of them", function()
+    local bufnr, cells = protocol.open_example(env)
+    handlers["textDocument/rangesFormatting"] = function(params)
+      return vim.tbl_map(function(r)
+        return { range = { start = r.start, ["end"] = r.start }, newText = "# " }
+      end, params.ranges)
+    end
+    local edits = request(bufnr, "textDocument/rangesFormatting", nil, {
+      ranges = {
+        range(rows.prose, 0, 5),
+        range(rows.cell2 + 1, 4, 6),
+      },
+      options = { tabSize = 4, insertSpaces = true },
+    })
+    local by_cell = {}
+    for _, params in ipairs(env.server:received("textDocument/rangesFormatting")) do
+      by_cell[params.textDocument.uri] = params.ranges
+    end
+    assert.same({ [cells[2]] = { range(1, 4, 6) } }, by_cell)
+    assert.same({ { range = range(rows.cell2 + 1, 4, 0), newText = "# " } }, edits)
+  end)
+
+  it("clips ranges to the cells they overlap", function()
+    local bufnr, cells = protocol.open_example(env)
+    request(bufnr, "textDocument/rangesFormatting", nil, {
+      ranges = { { start = { line = rows.cell1 + 1, character = 0 }, ["end"] = { line = rows.cell2, character = 3 } } },
+      options = { tabSize = 4, insertSpaces = true },
+    })
+    local by_cell = {}
+    for _, params in ipairs(env.server:received("textDocument/rangesFormatting")) do
+      by_cell[params.textDocument.uri] = params.ranges
+    end
+    assert.same({
+      [cells[1]] = { { start = { line = 1, character = 0 }, ["end"] = { line = 2, character = 0 } } },
+      [cells[2]] = { { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 3 } } },
+    }, by_cell)
+  end)
+
+  -- The notebook protocol saves cells through their notebook: there is no "will save" for them
+  it("answers willSaveWaitUntil for a notebook without asking the server", function()
+    local bufnr = protocol.open_example(env)
+    assert.is_nil(request(bufnr, "textDocument/willSaveWaitUntil", nil, { reason = 1 }))
+    assert.same({}, env.server:received("textDocument/willSaveWaitUntil"))
+  end)
+
+  it("shows a document the server names by a cell in the notebook", function()
+    local bufnr, cells = protocol.open_example(env)
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    local result = env.server:request("window/showDocument", { uri = cells[2], selection = range(1, 11, 1) })
+    assert.same({ success = true }, result)
+    assert.equal(bufnr, vim.api.nvim_get_current_buf())
+    assert.same({ rows.cell2 + 2, 11 }, vim.api.nvim_win_get_cursor(0))
+  end)
+
+  it("doesn't show a document the server names by a cell that's gone", function()
+    local bufnr, cells = protocol.open_example(env)
+    vim.api.nvim_buf_set_lines(bufnr, rows.cell2 - 2, rows.cell2 + 3, true, {})
+    local result = env.server:request("window/showDocument", { uri = cells[2], selection = range(1, 11, 1) })
+    assert.is_false(result.success)
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      assert.is_nil(vim.api.nvim_buf_get_name(buf):match("^vscode%-notebook%-cell:"))
+    end
+  end)
+
+  -- Neovim matches a registration's documentSelector against the buffer's language id
+  it("matches registrations for the cells' language to the notebook", function()
+    protocol.stop()
+    local capabilities = vim.deepcopy(fake_server.capabilities)
+    capabilities.documentFormattingProvider = nil
+    env = protocol.start({ capabilities = capabilities, handlers = handlers })
+    local bufnr = protocol.open_example(env)
+    env.server:request("client/registerCapability", {
+      registrations = {
+        {
+          id = "formatting",
+          method = "textDocument/formatting",
+          registerOptions = { documentSelector = { { language = "python" } } },
+        },
+      },
+    })
+    vim.lsp.buf.format({ bufnr = bufnr, name = env.name, timeout_ms = 1000 })
+    assert.equal(2, #env.server:received("textDocument/formatting"))
+  end)
+
+  it("keeps the language id of other buffers", function()
+    protocol.open_example(env)
+    local py = protocol.open(env, "utils.py", { "x = 1" })
+    local client = protocol.wait_attached(env, py)
+    assert.equal("python", client.get_language_id(py, "python"))
+    local md = vim.api.nvim_create_buf(true, false)
+    assert.equal("markdown", client.get_language_id(md, "markdown"))
   end)
 end)

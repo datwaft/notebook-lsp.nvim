@@ -124,4 +124,57 @@ describe("attaching", function()
     assert.same({}, vim.lsp.get_clients({ bufnr = markdown }))
     assert.is_false(opened_as_text(markdown))
   end)
+
+  describe("to a server whose notebook selector", function()
+    --- Starts a server whose only notebook selector is `selector`, opens the
+    --- example notebook and returns what the server opened, if anything.
+    local function open(selector)
+      local capabilities = vim.deepcopy(fake_server.capabilities)
+      capabilities.notebookDocumentSync = { notebookSelector = { selector } }
+      env = protocol.start({ capabilities = capabilities })
+      local detached = watch_detaching()
+      protocol.open(env, "notebook.md", protocol.notebook(protocol.example.body))
+      vim.wait(1000, function()
+        return detached() or #env.server:received("notebookDocument/didOpen") > 0
+      end, 5)
+      return env.server:received("notebookDocument/didOpen")[1]
+    end
+
+    local python = { { language = "python" } }
+
+    it("names any notebook", function()
+      assert.is_not_nil(open({ notebook = "*", cells = python }))
+    end)
+
+    it("names jupyter notebooks", function()
+      assert.is_not_nil(open({ notebook = "jupyter-notebook", cells = python }))
+    end)
+
+    it("names notebooks of another type", function()
+      assert.is_nil(open({ notebook = "interactive", cells = python }))
+    end)
+
+    it("names jupyter notebooks on disk by a pattern", function()
+      local filter = { notebookType = "jupyter-notebook", scheme = "file", pattern = "**/*.ipynb" }
+      assert.is_not_nil(open({ notebook = filter, cells = python }))
+    end)
+
+    it("names notebooks with another scheme", function()
+      assert.is_nil(open({ notebook = { scheme = "untitled" }, cells = python }))
+    end)
+
+    it("names notebooks elsewhere", function()
+      assert.is_nil(open({ notebook = { pattern = "**/elsewhere/*.ipynb" }, cells = python }))
+    end)
+
+    -- That would be every cell, prose included: the plugin syncs the code cells in the kernel's language
+    it("names no cells", function()
+      local opened = assert(open({ notebook = "*" }))
+      assert.same(protocol.example.texts, {
+        opened.cellTextDocuments[1].text,
+        opened.cellTextDocuments[2].text,
+      })
+      assert.equal(2, #opened.cellTextDocuments)
+    end)
+  end)
 end)
