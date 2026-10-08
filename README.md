@@ -42,6 +42,60 @@ these servers, it replaces the plugin's: keep `markdown` in `filetypes` and
 leave the other two unset for notebooks to keep working. Outside notebooks,
 servers behave as they would without the plugin.
 
+## Configuration
+
+### Servers
+
+`vim.g.notebook_lsp.servers` adds servers to the ones the plugin extends, by
+their `vim.lsp.config` name, and leaves out the ones set to `false`:
+
+```lua
+vim.g.notebook_lsp = {
+  servers = {
+    my_pyright = { "python" }, -- the server's own filetypes
+    pyright = false,
+  },
+}
+```
+
+The filetypes replace the config's own (see [Usage](#usage)), and are the
+kernel languages of the notebooks the server attaches to. The server must
+support the LSP notebook protocol: one that doesn't is detached from
+notebooks without seeing them.
+
+The plugin reads `vim.g.notebook_lsp` when it loads, so set it before then:
+early in your config, or in the `init` function of a lazy.nvim spec. Assign it
+as a whole: Neovim can't change a field of a table in `vim.g`
+(`vim.g.notebook_lsp.servers = ...` does nothing). Unknown options and invalid
+values are errors.
+
+To extend a server later, call the function the plugin uses:
+
+```lua
+require("notebook_lsp").extend("my_pyright", { "python" })
+```
+
+It affects the notebooks that attach afterwards.
+
+### Notebooks
+
+To keep the servers away from a notebook, set `vim.b.notebook_lsp = false` in
+it before its filetype is set, for example in `after/ftplugin/markdown.lua`:
+
+```lua
+if vim.api.nvim_buf_get_name(0):match("/private/") then
+  vim.b.notebook_lsp = false
+end
+```
+
+Neovim enables filetype plugins before it loads your config, so they run
+before `vim.lsp.enable()` attaches servers. Setting it later doesn't detach
+servers that are already attached.
+
+### Disabling the plugin
+
+`vim.g.loaded_notebook_lsp = true` before the plugin loads disables it.
+
 ## Known issues
 
 - Servers only get a notebook's code cells in its kernel's language. A server

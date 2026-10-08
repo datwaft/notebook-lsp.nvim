@@ -824,7 +824,10 @@ function M.extend(name, filetypes)
         return
       end
       local uri = vim.uri_from_bufnr(bufnr)
-      local read = jupytext.read(vim.api.nvim_buf_get_lines(bufnr, 0, -1, true))
+      -- A notebook can opt out, before its filetype is set
+      local enabled = vim.b[bufnr].notebook_lsp
+      assert(enabled == nil or enabled == false, "notebook-lsp: vim.b.notebook_lsp must be false or unset")
+      local read = enabled ~= false and jupytext.read(vim.api.nvim_buf_get_lines(bufnr, 0, -1, true))
       if not read then
         notebooks[uri] = nil
         return
