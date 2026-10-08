@@ -49,6 +49,9 @@ servers behave as they would without the plugin.
   and gets those too.
 - A server's dynamic registration that selects documents only by a file
   pattern, such as `**/*.py`, doesn't apply to notebooks.
+- Related reports about cells in pulled diagnostics (`relatedDocuments`) are
+  ignored: a notebook's diagnostics are updated when the notebook itself is
+  pulled. ty, ruff and basedpyright don't send related reports.
 
 - basedpyright reports no diagnostics in notebooks: with Neovim's default
   capabilities it uses pull diagnostics, and it answers pulls for notebook

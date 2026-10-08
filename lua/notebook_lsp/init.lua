@@ -332,17 +332,22 @@ local function merge(method, params, results, targets_)
     return { data = merge_tokens(results, targets_) }
   end
 
-  -- A full report of the notebook's diagnostics: the cells' reports were full too
+  -- A full report of the notebook's diagnostics: the cells' reports were full
+  -- too. With the related reports of the cells' about other files
   if method == "textDocument/diagnostic" then
-    local items = {}
+    local items, related = {}, nil ---@type lsp.Diagnostic[], table<string, any>?
     for i = 1, count do
       local report = results[i]
       if report then
         assert(report.kind == "full", "notebook-lsp: a cell's diagnostic report is not full")
         vim.list_extend(items, report.items)
+        for uri, other in pairs(report.relatedDocuments or {}) do
+          related = related or {}
+          related[uri] = other
+        end
       end
     end
-    return { kind = "full", items = items }
+    return { kind = "full", items = items, relatedDocuments = related }
   end
 
   local merged

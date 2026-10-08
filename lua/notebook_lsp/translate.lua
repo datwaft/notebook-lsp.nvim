@@ -55,6 +55,21 @@ function M.shift(value, lines)
   return out
 end
 
+--- DocumentDiagnosticReport.relatedDocuments: the reports about other files.
+--- Those about cells are left out: each would replace all the diagnostics of
+--- its notebook buffer with the cell's.
+---@param reports table<string, any>
+---@param context notebook_lsp.Context
+local function related_documents(reports, context)
+  local out = like(reports)
+  for uri, report in pairs(reports) do
+    if context.locate(uri) == nil then
+      out[uri] = M.to_client(report, nil, context)
+    end
+  end
+  return out
+end
+
 --- `value` from the server, for Neovim: positions in cells become positions
 --- in their notebook buffer, and cell URIs the buffer's URI. Positions without
 --- a URI of their own are in `where`, the cell the request was about (nil when
@@ -120,6 +135,8 @@ function M.to_client(value, where, context)
       out[key] = M.changes(item, context)
     elseif key == "documentChanges" then
       out[key] = M.document_changes(item, context)
+    elseif key == "relatedDocuments" and type(item) == "table" then
+      out[key] = related_documents(item, context)
     else
       out[key] = M.to_client(item, inner, context)
     end
