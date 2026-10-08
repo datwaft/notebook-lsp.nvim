@@ -135,19 +135,28 @@ function M.cursor(needle, offset)
   vim.api.nvim_win_set_cursor(0, { row + 1, col + (offset or 0) })
 end
 
+--- Sends `method` with `params` to the client named `client_name`, and returns the result.
+---@return any
+local function send(client_name, method, params)
+  local client = assert(vim.lsp.get_clients({ bufnr = 0, name = client_name })[1], client_name .. " not attached")
+  local response = assert(client:request_sync(method, params, 10000, 0), method .. " timed out")
+  assert(not response.err, vim.inspect(response.err))
+  return response.result
+end
+
+--- The position of `needle` plus `offset` columns.
+---@return lsp.Position
+local function position(needle, offset)
+  local row, col = find(needle)
+  return { line = row, character = col + (offset or 0) }
+end
+
 --- Sends `method` with the position of `needle` (plus `offset` columns) to the
 --- client named `client_name`, and returns the result.
 ---@return any
 local function request(client_name, method, needle, offset)
-  local row, col = find(needle)
-  local client = assert(vim.lsp.get_clients({ bufnr = 0, name = client_name })[1], client_name .. " not attached")
-  local params = {
-    textDocument = { uri = vim.uri_from_bufnr(0) },
-    position = { line = row, character = col + (offset or 0) },
-  }
-  local response = assert(client:request_sync(method, params, 10000, 0), method .. " timed out")
-  assert(not response.err, vim.inspect(response.err))
-  return response.result
+  local params = { textDocument = { uri = vim.uri_from_bufnr(0) }, position = position(needle, offset) }
+  return send(client_name, method, params)
 end
 
 --- Hover text at `needle`, or nil.
@@ -237,6 +246,58 @@ function M.rename(client_name, needle, new_name, wait_path)
   vim.wait(10000, function()
     return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, true), "\n") ~= before
   end)
+end
+
+--- The selection ranges at `needle` plus `offset` columns, innermost first,
+--- as the 0-based rows they start and end on.
+---@return integer[][]
+function M.selection_ranges(client_name, needle, offset)
+  local result = send(client_name, "textDocument/selectionRange", {
+    textDocument = { uri = vim.uri_from_bufnr(0) },
+    positions = { position(needle, offset) },
+  })
+  local rows, selection = {}, result[1]
+  while selection do
+    table.insert(rows, { selection.range.start.line, selection.range["end"].line })
+    selection = selection.parent
+  end
+  return rows
+end
+
+--- The folding ranges of the buffer, as {startLine, endLine}.
+---@return integer[][]
+function M.folding_ranges(client_name)
+  local result = send(client_name, "textDocument/foldingRange", { textDocument = { uri = vim.uri_from_bufnr(0) } })
+  return vim.tbl_map(function(fold)
+    return { fold.startLine, fold.endLine }
+  end, result)
+end
+
+--- The callers of the function at `needle` plus `offset` columns: their names,
+--- files, the rows of their names and the rows of their calls.
+---@return {name: string, file: string, row: integer, calls: integer[]}[]
+function M.incoming_calls(client_name, needle, offset)
+  local items = request(client_name, "textDocument/prepareCallHierarchy", needle, offset)
+  return vim.tbl_map(function(call)
+    return {
+      name = call.from.name,
+      file = vim.fs.basename(vim.uri_to_fname(call.from.uri)),
+      row = call.from.selectionRange.start.line,
+      calls = vim.tbl_map(function(range)
+        return range.start.line
+      end, call.fromRanges),
+    }
+  end, send(client_name, "callHierarchy/incomingCalls", { item = items[1] }))
+end
+
+--- The supertypes of the class at `needle` plus `offset` columns: their names,
+--- files and the rows of their names.
+---@return {name: string, file: string, row: integer}[]
+function M.supertypes(client_name, needle, offset)
+  local items = request(client_name, "textDocument/prepareTypeHierarchy", needle, offset)
+  return vim.tbl_map(function(item)
+    return { name = item.name, file = vim.fs.basename(vim.uri_to_fname(item.uri)), row = item.selectionRange.start.line }
+  end, send(client_name, "typeHierarchy/supertypes", { item = items[1] }))
 end
 
 --- Text of the buffer of `path`.

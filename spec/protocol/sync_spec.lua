@@ -1,3 +1,4 @@
+local fake_server = require("helpers.fake_server")
 local protocol = require("helpers.protocol")
 
 local rows = protocol.example.rows
@@ -123,6 +124,79 @@ describe("notebook synchronization", function()
       vim.cmd.write()
     end)
     assert.equal(notebook, env.server:wait_for("notebookDocument/didSave").notebookDocument.uri)
+  end)
+
+  --- Restarts the test environment with a server with `capabilities`.
+  local function restart(capabilities)
+    protocol.stop()
+    env = protocol.start({ capabilities = vim.tbl_deep_extend("force", fake_server.capabilities, capabilities) })
+  end
+
+  local function write(bufnr)
+    vim.api.nvim_buf_call(bufnr, function()
+      vim.cmd.write()
+    end)
+  end
+
+  -- Neovim decides from textDocumentSync.save, which is about text documents only
+  it("tells a server that asks for notebook saves only", function()
+    restart({ textDocumentSync = { save = false } })
+    local bufnr = protocol.open_example(env)
+    local notebook = env.server:wait_for("notebookDocument/didOpen").notebookDocument.uri
+    write(bufnr)
+    assert.equal(notebook, env.server:wait_for("notebookDocument/didSave").notebookDocument.uri)
+  end)
+
+  it("doesn't tell a server that asks for text document saves only", function()
+    restart({ notebookDocumentSync = { save = false } })
+    local bufnr = protocol.open_example(env)
+    write(bufnr)
+    assert.same({}, env.server:received("notebookDocument/didSave"))
+    assert.same({}, env.server:received("textDocument/didSave"))
+  end)
+
+  it("sends the cells' changes before the save", function()
+    local bufnr = protocol.open_example(env)
+    vim.api.nvim_buf_set_lines(bufnr, rows.cell1 + 1, rows.cell1 + 2, true, { "x = 2" })
+    write(bufnr)
+    env.server:wait_for("notebookDocument/didSave")
+    local methods = vim.tbl_map(function(message)
+      return message.method
+    end, env.server.messages)
+    local changed = assert(vim.iter(ipairs(methods)):find(function(_, method)
+      return method == "notebookDocument/didChange"
+    end))
+    local saved = assert(vim.iter(ipairs(methods)):find(function(_, method)
+      return method == "notebookDocument/didSave"
+    end))
+    assert.is_true(changed < saved)
+  end)
+
+  -- Neovim closes the document with the old name and opens it with the new one
+  it("reopens the notebook under the buffer's new name", function()
+    local bufnr, cells = protocol.open_example(env)
+    local old = env.server:wait_for("notebookDocument/didOpen").notebookDocument.uri
+    vim.api.nvim_buf_call(bufnr, function()
+      vim.cmd.saveas(env.dir .. "/renamed.md")
+    end)
+    local closed = env.server:wait_for("notebookDocument/didClose")
+    assert.equal(old, closed.notebookDocument.uri)
+    assert.same({ { uri = cells[1] }, { uri = cells[2] } }, closed.cellTextDocuments)
+    local opened = env.server:wait_for("notebookDocument/didOpen", 2)
+    assert.equal(vim.uri_from_fname(env.dir .. "/renamed.md.ipynb"), opened.notebookDocument.uri)
+    assert.same(protocol.example.texts, {
+      opened.cellTextDocuments[1].text,
+      opened.cellTextDocuments[2].text,
+    })
+    assert.same({}, env.server:received("textDocument/didOpen"))
+
+    -- and requests go to the cells of the notebook with the new name
+    local client = protocol.wait_attached(env, bufnr)
+    client:request_sync("textDocument/hover", {
+      textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+      position = { line = rows.cell2 + 1, character = 11 },
+    }, 1000, bufnr)
+    assert.equal(opened.cellTextDocuments[2].uri, env.server:wait_for("textDocument/hover").textDocument.uri)
   end)
 
   it("closes the notebook and its cells with the buffer", function()

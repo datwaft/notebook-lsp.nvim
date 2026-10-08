@@ -23,13 +23,19 @@ describe("request routing", function()
     protocol.stop()
   end)
 
-  --- Sends `method` from the notebook buffer at `position` and returns the result.
-  local function request(bufnr, method, position)
+  --- Sends `method` from the notebook buffer at `position`, with `extra`
+  --- params, and returns the result.
+  local function request(bufnr, method, position, extra)
     local client = protocol.wait_attached(env, bufnr)
-    local response = client:request_sync(method, {
-      textDocument = { uri = vim.uri_from_bufnr(bufnr) },
-      position = position,
-    }, 1000, bufnr)
+    local response = client:request_sync(
+      method,
+      vim.tbl_extend("force", {
+        textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+        position = position,
+      }, extra or {}),
+      1000,
+      bufnr
+    )
     assert(response and not response.err, vim.inspect(response))
     return response.result
   end
@@ -40,6 +46,25 @@ describe("request routing", function()
     local hover = env.server:wait_for("textDocument/hover")
     assert.equal(cells[2], hover.textDocument.uri)
     assert.same({ line = 1, character = 11 }, hover.position)
+  end)
+
+  -- Neovim flushes its pending changes before a request, but not for buffer 0, the current one
+  it("tells the server about pending changes before a request", function()
+    local bufnr = protocol.open_example(env)
+    local client = protocol.wait_attached(env, bufnr)
+    vim.api.nvim_buf_set_lines(bufnr, -1, -1, true, { "", "```python", "new = 1", "```" })
+    client:request_sync("textDocument/hover", {
+      textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+      position = { line = #protocol.lines(bufnr) - 2, character = 0 },
+    }, 1000, 0)
+    env.server:wait_for("textDocument/hover")
+    local methods = vim.tbl_map(function(message)
+      return message.method
+    end, env.server.messages)
+    local hovered = assert(vim.iter(ipairs(methods)):find(function(_, method)
+      return method == "textDocument/hover"
+    end))
+    assert.equal("notebookDocument/didChange", methods[hovered - 1])
   end)
 
   it("answers requests outside cells without asking the server", function()
@@ -211,5 +236,180 @@ describe("request routing", function()
     local hover = env.server:wait_for("textDocument/hover")
     assert.equal(vim.uri_from_bufnr(py), hover.textDocument.uri)
     assert.same({ line = 0, character = 4 }, hover.position)
+  end)
+
+  -- Each position goes to its cell; the answer has one range per position, in their order.
+  it("sends each position of a selection range request to its cell", function()
+    local bufnr, cells = protocol.open_example(env)
+    handlers["textDocument/selectionRange"] = function(params)
+      return vim.tbl_map(function(position)
+        return { range = range(position.line, 0, 3), parent = { range = range(0, 0, 9) } }
+      end, params.positions)
+    end
+    local client = protocol.wait_attached(env, bufnr)
+    local result = assert(client:request_sync("textDocument/selectionRange", {
+      textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+      positions = { { line = rows.cell2 + 1, character = 11 }, { line = rows.cell1 + 1, character = 0 } },
+    }, 1000, bufnr)).result
+    assert.same({
+      { range = range(rows.cell2 + 1, 0, 3), parent = { range = range(rows.cell2, 0, 9) } },
+      { range = range(rows.cell1 + 1, 0, 3), parent = { range = range(rows.cell1, 0, 9) } },
+    }, result)
+    local requests = env.server:received("textDocument/selectionRange")
+    table.sort(requests, function(a, b)
+      return a.textDocument.uri < b.textDocument.uri
+    end)
+    assert.same({ { line = 1, character = 0 } }, requests[1].positions)
+    assert.equal(cells[1], requests[1].textDocument.uri)
+    assert.same({ { line = 1, character = 11 } }, requests[2].positions)
+    assert.equal(cells[2], requests[2].textDocument.uri)
+  end)
+
+  -- The spec asks for one range per position: outside cells, the position itself.
+  it("answers a selection range outside cells with the position itself", function()
+    local bufnr = protocol.open_example(env)
+    handlers["textDocument/selectionRange"] = function(params)
+      return vim.tbl_map(function(position)
+        return { range = range(position.line, 0, 3) }
+      end, params.positions)
+    end
+    local client = protocol.wait_attached(env, bufnr)
+    local prose = { line = rows.prose, character = 5 }
+    local result = assert(client:request_sync("textDocument/selectionRange", {
+      textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+      positions = { prose, { line = rows.cell1 + 1, character = 0 } },
+    }, 1000, bufnr)).result
+    assert.same({ { range = { start = prose, ["end"] = prose } }, { range = range(rows.cell1 + 1, 0, 3) } }, result)
+  end)
+
+  it("answers nothing for a selection range only outside cells, without asking the server", function()
+    local bufnr = protocol.open_example(env)
+    local client = protocol.wait_attached(env, bufnr)
+    local result = assert(client:request_sync("textDocument/selectionRange", {
+      textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+      positions = { { line = rows.prose, character = 5 } },
+    }, 1000, bufnr)).result
+    assert.is_nil(result)
+    assert.same({}, env.server:received("textDocument/selectionRange"))
+  end)
+
+  it("maps the lines of folding ranges to the notebook", function()
+    local bufnr = protocol.open_example(env)
+    handlers["textDocument/foldingRange"] = function()
+      return { { startLine = 0, endLine = 1, kind = "region" } }
+    end
+    assert.same({
+      { startLine = rows.cell1, endLine = rows.cell1 + 1, kind = "region" },
+      { startLine = rows.cell2, endLine = rows.cell2 + 1, kind = "region" },
+    }, request(bufnr, "textDocument/foldingRange"))
+  end)
+
+  -- The item of a hierarchy is the server's: the requests that follow it must get it as it was.
+  describe("call and type hierarchies", function()
+    ---@return lsp.CallHierarchyItem
+    local function item(name, uri, line)
+      return {
+        name = name,
+        kind = 12,
+        uri = uri,
+        range = range(line, 0, 8),
+        selectionRange = range(line, 4, 1),
+        data = { name = name },
+      }
+    end
+
+    it("prepares an item in the notebook and asks for its calls with the server's item", function()
+      local bufnr, cells = protocol.open_example(env)
+      handlers["textDocument/prepareCallHierarchy"] = function()
+        return { item("f", cells[2], 0) }
+      end
+      handlers["callHierarchy/incomingCalls"] = function()
+        return { { from = item("g", cells[1], 1), fromRanges = { range(1, 4, 1) } } }
+      end
+      local client = protocol.wait_attached(env, bufnr)
+      local prepared = request(bufnr, "textDocument/prepareCallHierarchy", protocol.position(bufnr, rows.cell2, "f"))
+      assert.equal(vim.uri_from_bufnr(bufnr), prepared[1].uri)
+      assert.same(range(rows.cell2, 0, 8), prepared[1].range)
+
+      local calls =
+        assert(client:request_sync("callHierarchy/incomingCalls", { item = prepared[1] }, 1000, bufnr)).result
+      assert.same(item("f", cells[2], 0), env.server:wait_for("callHierarchy/incomingCalls").item)
+      assert.equal(vim.uri_from_bufnr(bufnr), calls[1].from.uri)
+      assert.same(range(rows.cell1 + 1, 0, 8), calls[1].from.range)
+      -- in the caller's cell
+      assert.same({ range(rows.cell1 + 1, 4, 1) }, calls[1].fromRanges)
+    end)
+
+    it("maps outgoing calls, whose ranges are in the item's cell, and follows them", function()
+      local bufnr, cells = protocol.open_example(env)
+      handlers["textDocument/prepareCallHierarchy"] = function()
+        return { item("f", cells[2], 0) }
+      end
+      handlers["callHierarchy/outgoingCalls"] = function()
+        return { { to = item("g", cells[1], 1), fromRanges = { range(1, 11, 1) } } }
+      end
+      local client = protocol.wait_attached(env, bufnr)
+      local prepared = request(bufnr, "textDocument/prepareCallHierarchy", protocol.position(bufnr, rows.cell2, "f"))
+      local calls =
+        assert(client:request_sync("callHierarchy/outgoingCalls", { item = prepared[1] }, 1000, bufnr)).result
+      assert.same(range(rows.cell1 + 1, 0, 8), calls[1].to.range)
+      assert.same({ range(rows.cell2 + 1, 11, 1) }, calls[1].fromRanges)
+
+      assert(client:request_sync("callHierarchy/outgoingCalls", { item = calls[1].to }, 1000, bufnr))
+      assert.same(item("g", cells[1], 1), env.server:wait_for("callHierarchy/outgoingCalls", 2).item)
+    end)
+
+    it("asks for the supertypes and subtypes of an item with the server's item", function()
+      local bufnr, cells = protocol.open_example(env)
+      handlers["textDocument/prepareTypeHierarchy"] = function()
+        return { item("B", cells[2], 0) }
+      end
+      handlers["typeHierarchy/supertypes"] = function()
+        return { item("A", cells[1], 1) }
+      end
+      local client = protocol.wait_attached(env, bufnr)
+      local prepared = request(bufnr, "textDocument/prepareTypeHierarchy", protocol.position(bufnr, rows.cell2, "f"))
+      local supertypes =
+        assert(client:request_sync("typeHierarchy/supertypes", { item = prepared[1] }, 1000, bufnr)).result
+      assert.same(item("B", cells[2], 0), env.server:wait_for("typeHierarchy/supertypes").item)
+      assert.equal(vim.uri_from_bufnr(bufnr), supertypes[1].uri)
+      assert.same(range(rows.cell1 + 1, 4, 1), supertypes[1].selectionRange)
+
+      assert(client:request_sync("typeHierarchy/subtypes", { item = supertypes[1] }, 1000, bufnr))
+      assert.same(item("A", cells[1], 1), env.server:wait_for("typeHierarchy/subtypes").item)
+    end)
+  end)
+
+  it("gives each cell only its own diagnostics in a code action request", function()
+    local bufnr, cells = protocol.open_example(env)
+    local function diagnostic(line, message)
+      return { range = range(line, 0, 1), message = message }
+    end
+    request(bufnr, "textDocument/codeAction", nil, {
+      range = { start = { line = rows.cell1, character = 0 }, ["end"] = { line = rows.cell2 + 1, character = 0 } },
+      context = { diagnostics = { diagnostic(rows.cell1, "in cell 1"), diagnostic(rows.cell2 + 1, "in cell 2") } },
+    })
+    local by_cell = {}
+    for _, params in ipairs(env.server:received("textDocument/codeAction")) do
+      by_cell[params.textDocument.uri] = params.context.diagnostics
+    end
+    assert.same({
+      [cells[1]] = { diagnostic(0, "in cell 1") },
+      [cells[2]] = { diagnostic(1, "in cell 2") },
+    }, by_cell)
+  end)
+
+  -- Arguments are the server's, as data is: Neovim sends them back as they are.
+  it("leaves the arguments of commands untouched", function()
+    local bufnr, cells = protocol.open_example(env)
+    local arguments = { { uri = cells[1], range = range(1, 0, 1) } }
+    handlers["textDocument/codeLens"] = function(params)
+      if params.textDocument.uri == cells[1] then
+        return { { range = range(1, 0, 1), command = { title = "run", command = "run", arguments = arguments } } }
+      end
+    end
+    local lenses = request(bufnr, "textDocument/codeLens")
+    assert.same(range(rows.cell1 + 1, 0, 1), lenses[1].range)
+    assert.same(arguments, lenses[1].command.arguments)
   end)
 end)

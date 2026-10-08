@@ -118,6 +118,39 @@ describe("ty and ruff on a notebook", function()
     end
   end)
 
+  it("expands selections within the cell", function()
+    local ranges = child:call("selection_ranges", "ty", "return x", 7)
+    local row = child:call("row", "return x")
+    assert.same({ row, row }, ranges[1])
+    local first, closing = child:call("row", "def f():"), child:call("row", "z   =") + 1
+    for _, range in ipairs(ranges) do
+      assert.is_true(range[1] >= first and range[2] <= closing, vim.inspect(ranges))
+    end
+  end)
+
+  it("folds the notebook on the lines of the cells", function()
+    local folds = child:call("folding_ranges", "ty")
+    local f = { child:call("row", "def f():"), child:call("row", "return x") }
+    assert.is_true(
+      vim.iter(folds):any(function(fold)
+        return vim.deep_equal(fold, f)
+      end),
+      vim.inspect(folds)
+    )
+    local cells = {
+      { child:call("row", "%matplotlib"), child:call("row", 'x: int = "oops"') },
+      { child:call("row", "def f():"), child:call("row", "z   =") },
+    }
+    for _, fold in ipairs(folds) do
+      assert.is_true(
+        vim.iter(cells):any(function(cell)
+          return fold[1] >= cell[1] and fold[2] <= cell[2]
+        end),
+        vim.inspect(fold)
+      )
+    end
+  end)
+
   it("renames across the notebook from a .py file, with one client per server", function()
     local notebook = dir .. "/analysis.md"
     child:call("edit", dir .. "/utils.py")

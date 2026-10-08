@@ -7,7 +7,7 @@ local M = {}
 ---@type lsp.ServerCapabilities
 M.capabilities = {
   textDocumentSync = { openClose = true, change = 2, save = true },
-  notebookDocumentSync = { notebookSelector = { { cells = { { language = "python" } } } } },
+  notebookDocumentSync = { notebookSelector = { { cells = { { language = "python" } } } }, save = true },
   hoverProvider = true,
   definitionProvider = true,
   completionProvider = { resolveProvider = true, triggerCharacters = { "." } },

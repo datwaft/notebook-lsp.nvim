@@ -43,6 +43,20 @@ describe("basedpyright on a notebook", function()
     assert.matches("```python\nfrom typing import OrderedDict\n+def f%(%):\n    return x %+ OrderedDict\n", text)
   end)
 
+  -- ty has call hierarchies too, but its items for cells name the notebook instead (a known issue)
+  it("follows the call hierarchy across cells", function()
+    local last = #vim.split(child:call("text"), "\n")
+    child:call("set_lines", last, last, { "", "```python", "def g():", "    return f()", "```" })
+    assert.same({
+      {
+        name = "g",
+        file = "analysis.md",
+        row = child:call("row", "def g():"),
+        calls = { child:call("row", "return f()") },
+      },
+    }, child:call("incoming_calls", "basedpyright", "def f():", 4))
+  end)
+
   it("renames across the notebook from a .py file", function()
     local notebook = dir .. "/analysis.md"
     child:call("edit", dir .. "/utils.py")
