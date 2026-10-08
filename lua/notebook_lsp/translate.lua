@@ -1,7 +1,7 @@
 -- Translates LSP values between notebook buffers and the cells servers know.
 -- A cell's lines are the buffer's rows from the cell's start, column for
 -- column, so translating a position only moves its line. Opaque `data` fields
--- are the server's own and are never touched.
+-- and command arguments are the server's own and are never touched.
 local M = {}
 
 ---@class notebook_lsp.Where the cell a value is about
@@ -21,6 +21,11 @@ local function is_position(value)
   return type(value.line) == "number" and type(value.character) == "number"
 end
 
+--- Whether `value` is a FoldingRange, which has lines instead of positions.
+local function is_folding_range(value)
+  return type(value.startLine) == "number" and type(value.endLine) == "number"
+end
+
 --- An empty table that encodes like `value` (a JSON object or array).
 local function like(value)
   return setmetatable({}, getmetatable(value))
@@ -36,6 +41,11 @@ function M.shift(value, lines)
   if is_position(value) then
     local moved = vim.deepcopy(value)
     moved.line = value.line + lines
+    return moved
+  end
+  if is_folding_range(value) then
+    local moved = vim.deepcopy(value)
+    moved.startLine, moved.endLine = value.startLine + lines, value.endLine + lines
     return moved
   end
   local out = like(value)
@@ -60,7 +70,7 @@ function M.to_client(value, where, context)
   if type(value) ~= "table" then
     return value
   end
-  if is_position(value) then
+  if is_position(value) or is_folding_range(value) then
     return where and M.shift(value, where.cell.start) or value
   end
   if vim.islist(value) then
@@ -92,8 +102,12 @@ function M.to_client(value, where, context)
 
   local out = like(value)
   for key, item in pairs(value) do
-    if key == "data" then
-      out[key] = item
+    if key == "data" or (key == "arguments" and type(value.command) == "string") then
+      out[key] = item -- the server's own, which Neovim sends back as it is
+    elseif key == "fromRanges" and type(value.from) == "table" then
+      -- The ranges of an incoming call are in its caller's document
+      local caller = context.locate(value.from.uri)
+      out[key] = caller ~= false and M.to_client(item, caller or nil, context) or nil
     elseif key == "uri" then
       out[key] = inner and inner.notebook.uri or item
     elseif key == "targetUri" then

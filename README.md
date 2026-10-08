@@ -44,6 +44,8 @@ would without the plugin.
 - basedpyright reports no diagnostics in notebooks: with Neovim's default
   capabilities it uses pull diagnostics, and it answers pulls for notebook
   cells with nothing.
+- ty's call and type hierarchies don't work in notebooks: its items for code
+  in cells name the notebook instead of the cell.
 
 ## Development
 

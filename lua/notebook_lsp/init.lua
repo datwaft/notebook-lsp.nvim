@@ -60,6 +60,21 @@ local function locate(uri)
   end
 end
 
+--- The notebook of the buffer whose name is now `uri`, under that URI. After
+--- `:saveas`, Neovim closes the document with the buffer's old name and opens
+--- it with the new one, without attaching the buffer again.
+---@param uri string
+---@return notebook_lsp.Notebook?
+local function renamed(uri)
+  for old, notebook in pairs(notebooks) do
+    if vim.api.nvim_buf_is_valid(notebook.bufnr) and vim.uri_from_bufnr(notebook.bufnr) == uri then
+      notebooks[old] = nil
+      notebooks[uri] = Notebook.new(notebook.bufnr, notebook.language, notebook.filetype)
+      return notebooks[uri]
+    end
+  end
+end
+
 -- Requests that resolve an item of an earlier result, and the results that carry such items
 local RESOLVE = {
   ["completionItem/resolve"] = true,
@@ -76,6 +91,47 @@ local RESOLVABLE = {
   ["textDocument/documentLink"] = true,
 }
 
+-- Requests about an item of a call or type hierarchy, and the results that carry such items
+local HIERARCHY = {
+  ["callHierarchy/incomingCalls"] = true,
+  ["callHierarchy/outgoingCalls"] = true,
+  ["typeHierarchy/supertypes"] = true,
+  ["typeHierarchy/subtypes"] = true,
+}
+local HIERARCHY_ITEMS = {
+  ["textDocument/prepareCallHierarchy"] = true,
+  ["textDocument/prepareTypeHierarchy"] = true,
+  ["typeHierarchy/supertypes"] = true,
+  ["typeHierarchy/subtypes"] = true,
+}
+
+--- The hierarchy items in a result of `method`, each recording the item as the
+--- server gave it if it's in a cell: the requests about an item get it back as
+--- it was, in its cell.
+---@param method string
+---@param result any
+local function tag_hierarchy(method, result)
+  local function tagged(item)
+    if type(item) ~= "table" or type(item.uri) ~= "string" or not locate(item.uri) then
+      return item
+    end
+    local copy = vim.tbl_extend("force", {}, item)
+    translate.tag(copy, item.uri, item)
+    return copy
+  end
+  if type(result) ~= "table" then
+    return result
+  elseif method == "callHierarchy/incomingCalls" or method == "callHierarchy/outgoingCalls" then
+    local key = method == "callHierarchy/incomingCalls" and "from" or "to"
+    return vim.tbl_map(function(call)
+      return vim.tbl_extend("force", call, { [key] = tagged(call[key]) })
+    end, result)
+  elseif HIERARCHY_ITEMS[method] then
+    return vim.tbl_map(tagged, result)
+  end
+  return result
+end
+
 --- The result of `method` from the server, about `where`, for Neovim: nil if
 --- the cell is gone since. Items that may be resolved later record their
 --- cell, so they resolve in it.
@@ -88,7 +144,7 @@ local function to_client(method, result, where, context)
   if locate(cell_uri) == false then
     return nil
   end
-  local translated = translate.to_client(result, where, context)
+  local translated = translate.to_client(tag_hierarchy(method, result), where, context)
   if RESOLVABLE[method] and type(result) == "table" and translated ~= nil then
     local originals, items, default = result, translated, nil
     if result.items then -- a CompletionList
@@ -112,15 +168,28 @@ end
 ---@class (private) notebook_lsp.Target a cell a request goes to, and the request as that cell's
 ---@field where notebook_lsp.Where
 ---@field params table
+---@field indexes? integer[] for a request with several positions: which of them are the cell's, in its params' order
 
---- The cells a request about `notebook` goes to: the cell of its position, the
---- cells its range overlaps (with the range clipped to each), or every cell.
+--- The cells a request about `notebook` goes to: the cell of its position,
+--- the cells of its positions, the cells its range overlaps (with the range
+--- clipped to each), or every cell.
 ---@param notebook notebook_lsp.Notebook
 ---@param params table
 ---@return notebook_lsp.Target[]
 local function targets(notebook, params)
   local function target(cell, range)
-    local cell_params = translate.shift(vim.tbl_extend("force", params, { range = range }), -cell.start)
+    local cell_params = vim.tbl_extend("force", params, { range = range })
+    local request_context = params.context
+    if type(request_context) == "table" and type(request_context.diagnostics) == "table" then
+      -- A code action request for a cell is about the cell's own diagnostics
+      cell_params.context = vim.tbl_extend("force", request_context, {
+        diagnostics = vim.tbl_filter(function(diagnostic)
+          local line = diagnostic.range.start.line
+          return line >= cell.start and line <= cell.start + #cell.lines
+        end, request_context.diagnostics),
+      })
+    end
+    cell_params = translate.shift(cell_params, -cell.start)
     cell_params.textDocument = vim.tbl_extend("force", cell_params.textDocument, { uri = notebook:cell_uri(cell.id) })
     return { where = { notebook = notebook, cell = cell }, params = cell_params }
   end
@@ -133,6 +202,22 @@ local function targets(notebook, params)
     return cell and { target(cell) } or {}
   end
   local found = {}
+  if params.positions then
+    local by_cell = {} ---@type table<integer, notebook_lsp.Target>
+    for i, position in ipairs(params.positions) do
+      local cell = notebook:cell_at(position.line)
+      if cell then
+        if not by_cell[cell.id] then
+          by_cell[cell.id] = target(cell)
+          by_cell[cell.id].params.positions, by_cell[cell.id].indexes = {}, {}
+          table.insert(found, by_cell[cell.id])
+        end
+        table.insert(by_cell[cell.id].params.positions, translate.shift(position, -cell.start))
+        table.insert(by_cell[cell.id].indexes, i)
+      end
+    end
+    return found
+  end
   for _, cell in ipairs(notebook:read()) do
     local range = params.range
     if not range then
@@ -183,10 +268,27 @@ end
 
 --- One result of `method` for the notebook out of the results for its cells.
 ---@param method string
+---@param params table the request for the notebook
 ---@param results any[] by target; nil for no result
 ---@param targets_ notebook_lsp.Target[]
-local function merge(method, results, targets_)
+local function merge(method, params, results, targets_)
   local count = #targets_
+  if method == "textDocument/selectionRange" then
+    if count == 0 then
+      return nil
+    end
+    -- One range per position, in their order: outside cells, the position itself
+    local ranges = {}
+    for i, target in ipairs(targets_) do
+      for j, index in ipairs(target.indexes) do
+        ranges[index] = results[i] and results[i][j]
+      end
+    end
+    for i, position in ipairs(params.positions) do
+      ranges[i] = ranges[i] or { range = { start = position, ["end"] = position } }
+    end
+    return ranges
+  end
   if method == "textDocument/semanticTokens/full" or method == "textDocument/semanticTokens/range" then
     -- Without a result id: the next request can't be for the changes since this one
     return { data = merge_tokens(results, targets_) }
@@ -224,8 +326,15 @@ end
 local last_request_id = 0
 
 ---@class (private) notebook_lsp.Synced what a server was told about a notebook
+---@field notebook_uri string
 ---@field version integer
----@field cells {id: integer, text: string, version: integer}[]
+---@field cells notebook_lsp.SyncedCell[]
+
+---@class (private) notebook_lsp.SyncedCell
+---@field id integer
+---@field uri string
+---@field text string
+---@field version integer
 
 --- Puts the plugin between `client` and its server, once per client: Neovim's
 --- messages about notebook buffers become notebookDocument/* messages, and
@@ -284,25 +393,46 @@ local function intercept(client)
   end
 
   ---@param notebook notebook_lsp.Notebook
-  ---@param cell {id: integer, text: string, version: integer}
+  ---@param cell notebook_lsp.SyncedCell
   local function cell_document(notebook, cell)
-    return { uri = notebook:cell_uri(cell.id), languageId = notebook.filetype, version = cell.version, text = cell.text }
+    return { uri = cell.uri, languageId = notebook.filetype, version = cell.version, text = cell.text }
   end
+
+  -- Declared here for open(), which tells the server about saves
+  local change ---@type fun(notebook: notebook_lsp.Notebook): boolean
 
   ---@param notebook notebook_lsp.Notebook
   local function open(notebook)
-    local state = { version = 1, cells = {} }
+    local state = { notebook_uri = notebook.notebook_uri, version = 1, cells = {} } ---@type notebook_lsp.Synced
     for _, cell in ipairs(notebook:read()) do
-      table.insert(state.cells, { id = cell.id, text = cell.text, version = 1 })
+      table.insert(state.cells, { id = cell.id, uri = notebook:cell_uri(cell.id), text = cell.text, version = 1 })
     end
     synced[notebook.uri] = state
+
+    -- Neovim tells servers about saves if they want them for text documents
+    -- (textDocumentSync.save), while notebooks have their own option
+    vim.api.nvim_create_autocmd("BufWritePost", {
+      buffer = notebook.bufnr,
+      group = vim.api.nvim_create_augroup(("notebook_lsp.save.%d"):format(client.id), { clear = false }),
+      desc = "notebook-lsp: notebookDocument/didSave",
+      callback = function()
+        if synced[notebook.uri] ~= state or client:is_stopped() then
+          return true -- the notebook is closed since
+        end
+        if vim.tbl_get(client.server_capabilities, "notebookDocumentSync", "save") then
+          change(notebook) -- the changes Neovim hasn't sent yet go first
+          rpc.notify("notebookDocument/didSave", { notebookDocument = { uri = state.notebook_uri } })
+        end
+      end,
+    })
+
     return rpc.notify("notebookDocument/didOpen", {
       notebookDocument = {
-        uri = notebook.notebook_uri,
+        uri = state.notebook_uri,
         notebookType = "jupyter-notebook",
         version = state.version,
         cells = vim.tbl_map(function(cell)
-          return { kind = CODE, document = notebook:cell_uri(cell.id) }
+          return { kind = CODE, document = cell.uri }
         end, state.cells),
       },
       cellTextDocuments = vim.tbl_map(function(cell)
@@ -313,7 +443,7 @@ local function intercept(client)
 
   --- Tells the server how the cells changed since it was last told, if they did.
   ---@param notebook notebook_lsp.Notebook
-  local function change(notebook)
+  function change(notebook)
     local state = assert(synced[notebook.uri], "notebook-lsp: a change to a notebook the server doesn't have open")
     local old, new = state.cells, notebook:read()
 
@@ -327,7 +457,7 @@ local function intercept(client)
       old_last, new_last = old_last - 1, new_last - 1
     end
 
-    local before, inserted = {}, {} ---@type table<integer, {id: integer, text: string, version: integer}>, table<integer, true>
+    local before, inserted = {}, {} ---@type table<integer, notebook_lsp.SyncedCell>, table<integer, true>
     for _, cell in ipairs(old) do
       before[cell.id] = cell
     end
@@ -340,12 +470,15 @@ local function intercept(client)
         inserted[cell.id] = true
         table.insert(structure.array.cells, { kind = CODE, document = notebook:cell_uri(cell.id) })
         if not before[cell.id] then
-          table.insert(structure.didOpen, cell_document(notebook, { id = cell.id, text = cell.text, version = 1 }))
+          table.insert(
+            structure.didOpen,
+            cell_document(notebook, { id = cell.id, uri = notebook:cell_uri(cell.id), text = cell.text, version = 1 })
+          )
         end
       end
       for i = first, old_last do
         if not inserted[old[i].id] then
-          table.insert(structure.didClose, { uri = notebook:cell_uri(old[i].id) })
+          table.insert(structure.didClose, { uri = old[i].uri })
         end
       end
     end
@@ -362,7 +495,7 @@ local function intercept(client)
           changes = { { text = cell.text } },
         })
       end
-      table.insert(cells, { id = cell.id, text = cell.text, version = version })
+      table.insert(cells, { id = cell.id, uri = notebook:cell_uri(cell.id), text = cell.text, version = version })
     end
     state.cells = cells
 
@@ -376,15 +509,17 @@ local function intercept(client)
     })
   end
 
-  ---@param notebook notebook_lsp.Notebook
-  local function close(notebook)
-    local state = assert(synced[notebook.uri], "notebook-lsp: closing a notebook the server doesn't have open")
-    synced[notebook.uri] = nil
-    pushed[notebook.uri] = nil
+  --- Closes the notebook the server has open for the buffer with `uri`, as
+  --- it was told about it: the buffer may have another name since.
+  ---@param uri string
+  local function close(uri)
+    local state = assert(synced[uri], "notebook-lsp: closing a notebook the server doesn't have open")
+    synced[uri] = nil
+    pushed[uri] = nil
     return rpc.notify("notebookDocument/didClose", {
-      notebookDocument = { uri = notebook.notebook_uri },
+      notebookDocument = { uri = state.notebook_uri },
       cellTextDocuments = vim.tbl_map(function(cell)
-        return { uri = notebook:cell_uri(cell.id) }
+        return { uri = cell.uri }
       end, state.cells),
     })
   end
@@ -409,10 +544,11 @@ local function intercept(client)
   --- Sends `method` to `targets`, and answers `callback` with their results
   --- combined, under a request id of the plugin's own.
   ---@param method string
+  ---@param params table the request for the notebook
   ---@param targets_ notebook_lsp.Target[]
-  local function fan_out(method, targets_, callback, notify_reply)
+  local function fan_out(method, params, targets_, callback, notify_reply)
     if #targets_ == 0 then
-      return answer(merge(method, {}, targets_), callback, notify_reply)
+      return answer(merge(method, params, {}, targets_), callback, notify_reply)
     end
     last_request_id = last_request_id - 1
     local id, results, pending, failure = last_request_id, {}, #targets_, nil
@@ -424,7 +560,7 @@ local function intercept(client)
       if failure then
         callback(failure, nil, id)
       else
-        callback(nil, merge(method, results, targets_), id)
+        callback(nil, merge(method, params, results, targets_), id)
       end
     end
 
@@ -459,6 +595,19 @@ local function intercept(client)
 
   client.rpc = setmetatable({
     request = function(method, params, callback, notify_reply)
+      -- A hierarchy item from a cell goes back as the server gave it
+      if HIERARCHY[method] and type(params) == "table" and type(params.item) == "table" then
+        local cell_uri, item = translate.untag(params.item)
+        local where = cell_uri and locate(cell_uri) or nil
+        if cell_uri and not where then
+          return answer(nil, callback, notify_reply) -- nothing to ask about an item of a cell that's gone
+        end
+        local sent = cell_uri and vim.tbl_extend("force", params, { item = item }) or params
+        return rpc.request(method, sent, function(err, result, id)
+          callback(err, result and translate.to_client(tag_hierarchy(method, result), where, context), id)
+        end, notify_reply)
+      end
+
       -- An item of an earlier result resolves in the cell it came from
       if RESOLVE[method] and type(params) == "table" then
         local cell_uri, item = translate.untag(params)
@@ -483,6 +632,11 @@ local function intercept(client)
       if not notebook then
         return pass_through(method, params, callback, notify_reply)
       end
+      -- The request is about the cells as they are now, which the server must
+      -- know first. Neovim flushes its pending changes, but not for buffer 0
+      if synced[notebook.uri] then
+        change(notebook)
+      end
       if method == "textDocument/diagnostic" then
         -- The notebook's previous report says nothing of the cells' reports
         params = vim.deepcopy(params)
@@ -495,7 +649,7 @@ local function intercept(client)
           callback(err, result and to_client(method, result, target.where, context), id)
         end, notify_reply)
       end
-      return fan_out(method, found, callback, notify_reply)
+      return fan_out(method, params, found, callback, notify_reply)
     end,
 
     notify = function(method, params)
@@ -509,6 +663,13 @@ local function intercept(client)
       local document = type(params) == "table" and params.textDocument or nil
       local uri = document and document.uri ---@type string?
       local notebook = uri and notebooks[uri]
+      if uri and not notebook and method == "textDocument/didOpen" then
+        notebook = renamed(uri)
+      elseif uri and not notebook and method == "textDocument/didClose" and (synced[uri] or rejected[uri]) then
+        -- A notebook whose buffer was renamed, which another client reopened under the new name first
+        rejected[uri] = nil
+        return synced[uri] and close(uri) or true
+      end
       if not uri or not notebook then
         return rpc.notify(method, params)
       end
@@ -534,12 +695,10 @@ local function intercept(client)
         -- Also when only lines outside cells changed: the cells may have moved
         show_diagnostics(notebook)
         return change(notebook)
-      elseif method == "textDocument/didSave" then
-        return rpc.notify("notebookDocument/didSave", { notebookDocument = { uri = notebook.notebook_uri } })
       elseif method == "textDocument/didClose" then
-        return close(notebook)
+        return close(uri)
       end
-      -- Nothing else about the Markdown file concerns the server
+      -- Nothing else about the Markdown file concerns the server, saves included: see open()
       return true
     end,
   }, { __index = rpc })
