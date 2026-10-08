@@ -29,6 +29,18 @@ describe("notebook synchronization", function()
     end
   end)
 
+  -- Servers decide by the extension that it's a notebook, e.g. for ruff's per-file-ignores; `.md.`
+  -- keeps it from being the .ipynb file jupytext pairs with the notebook.
+  it("opens the notebook as a .ipynb file next to the Markdown file, with cells in it", function()
+    local bufnr = protocol.open_example(env)
+    local opened = env.server:wait_for("notebookDocument/didOpen")
+    local notebook = vim.uri_from_fname(vim.api.nvim_buf_get_name(bufnr) .. ".ipynb")
+    assert.equal(notebook, opened.notebookDocument.uri)
+    for i, document in ipairs(opened.cellTextDocuments) do
+      assert.equal(("%s#c%d"):format((notebook:gsub("^file:", "vscode-notebook-cell:")), i), document.uri)
+    end
+  end)
+
   it("doesn't open the Markdown file itself as a text document", function()
     protocol.open_example(env)
     assert.same({}, env.server:received("textDocument/didOpen"))
@@ -66,6 +78,33 @@ describe("notebook synchronization", function()
     assert.equal("y = 2\n", structure.didOpen[1].text)
     assert.same({ { kind = 2, document = structure.didOpen[1].uri } }, structure.array.cells)
     assert.is_false(vim.tbl_contains(cells, structure.didOpen[1].uri), "a new cell needs a new URI")
+  end)
+
+  it("keeps the URIs of cells when a cell is added before them", function()
+    local bufnr, cells = protocol.open_example(env)
+    vim.api.nvim_buf_set_lines(bufnr, rows.cell1 - 1, rows.cell1 - 1, true, { "```python", "first = 0", "```", "" })
+    local structure = env.server:wait_for("notebookDocument/didChange").change.cells.structure
+    assert.equal(0, structure.array.start)
+    assert.equal(0, structure.array.deleteCount)
+    assert.equal("first = 0\n", structure.didOpen[1].text)
+    vim.api.nvim_buf_set_lines(bufnr, -3, -2, true, { "    return x + 1" }) -- in the second Python cell
+    local change = env.server:wait_for("notebookDocument/didChange", 2).change.cells
+    assert.equal(cells[2], change.textContent[1].document.uri)
+  end)
+
+  it("increases the versions of the notebook and of the changed cells with every change", function()
+    local bufnr = protocol.open_example(env)
+    local opened = env.server:wait_for("notebookDocument/didOpen")
+    vim.api.nvim_buf_set_text(bufnr, rows.cell1 + 1, 4, rows.cell1 + 1, 5, { "2" })
+    local first = env.server:wait_for("notebookDocument/didChange")
+    vim.api.nvim_buf_set_text(bufnr, rows.cell1 + 1, 4, rows.cell1 + 1, 5, { "3" })
+    local second = env.server:wait_for("notebookDocument/didChange", 2)
+    assert.is_true(first.notebookDocument.version > opened.notebookDocument.version)
+    assert.is_true(second.notebookDocument.version > first.notebookDocument.version)
+    local opened_cell = opened.cellTextDocuments[1].version
+    local first_cell = first.change.cells.textContent[1].document.version
+    assert.is_true(first_cell > opened_cell)
+    assert.is_true(second.change.cells.textContent[1].document.version > first_cell)
   end)
 
   it("removes a cell with a structural change", function()
