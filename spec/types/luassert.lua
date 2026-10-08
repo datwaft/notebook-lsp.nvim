@@ -17,3 +17,8 @@ function internal.is_false(value, message) end
 ---@param value any
 ---@param message? string shown when the assertion fails
 function internal.truthy(value, message) end
+
+---@param callback function a callback function that should error
+---@param error? string the specific error message that will be asserted
+---@param message? string shown when the assertion fails
+function internal.has_error(callback, error, message) end

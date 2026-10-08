@@ -59,6 +59,36 @@ describe("attaching", function()
       assert.same({}, vim.lsp.get_clients({ bufnr = markdown }))
     end)
 
+    describe("with vim.b.notebook_lsp", function()
+      --- Sets `vim.b.notebook_lsp` to `value` in the next Markdown buffer read,
+      --- before its filetype is set (see options_spec for after/ftplugin/).
+      local function set_in_next_markdown(value)
+        vim.api.nvim_create_autocmd("BufReadPre", {
+          pattern = "*.md",
+          once = true,
+          callback = function(event)
+            vim.b[event.buf].notebook_lsp = value
+          end,
+        })
+      end
+
+      it("doesn't attach to a notebook that opts out", function()
+        set_in_next_markdown(false)
+        local markdown = protocol.open(env, "notebook.md", protocol.notebook(protocol.example.body))
+        protocol.wait_attached(env, protocol.open(env, "utils.py", { "x = 1" }))
+        assert.same({}, vim.lsp.get_clients({ bufnr = markdown }))
+        assert.same({}, env.server:received("notebookDocument/didOpen"))
+        assert.is_false(opened_as_text(markdown))
+      end)
+
+      it("fails on values other than false", function()
+        set_in_next_markdown(true)
+        assert.has_error(function()
+          protocol.open(env, "notebook.md", protocol.notebook(protocol.example.body))
+        end, nil)
+      end)
+    end)
+
     it("serves .py files and notebooks of the same project with one client", function()
       local notebook =
         protocol.wait_attached(env, protocol.open(env, "notebook.md", protocol.notebook(protocol.example.body)))
