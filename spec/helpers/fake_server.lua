@@ -17,7 +17,7 @@ M.capabilities = {
 }
 
 ---@class FakeServer
----@field cmd fun(dispatchers: vim.lsp.rpc.Dispatchers, config: vim.lsp.ClientConfig): vim.lsp.rpc.PublicClient
+---@field cmd fun(dispatchers: vim.lsp.rpc.Dispatchers, config: vim.lsp.ClientConfig): vim.lsp.rpc.Client
 ---@field messages {method: string, params: any}[] every message received, in order
 ---@field handlers table<string, fun(params: any): any> answers to requests; others get a null result, except
 --- */resolve requests, which get their item back
@@ -75,15 +75,13 @@ end
 --- Params of every received message with `method`, in order.
 ---@return any[]
 function FakeServer:received(method)
-  return vim
-    .iter(self.messages)
-    :filter(function(message)
-      return message.method == method
-    end)
-    :map(function(message)
-      return message.params
-    end)
-    :totable()
+  local params = {}
+  for _, message in ipairs(self.messages) do
+    if message.method == method then
+      table.insert(params, message.params)
+    end
+  end
+  return params
 end
 
 --- Waits until `count` (default 1) messages with `method` arrived and returns the params of the last of them.

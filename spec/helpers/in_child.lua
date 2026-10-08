@@ -79,9 +79,12 @@ end
 ---@param needle string plain text
 ---@param pattern string Lua pattern
 function M.has_diagnostic(needle, pattern)
-  return vim.iter(M.diagnostics()):any(function(diagnostic)
-    return diagnostic.line:find(needle, 1, true) ~= nil and diagnostic.message:find(pattern) ~= nil
-  end)
+  for _, diagnostic in ipairs(M.diagnostics()) do
+    if diagnostic.line:find(needle, 1, true) and diagnostic.message:find(pattern) then
+      return true
+    end
+  end
+  return false
 end
 
 --- Whether any diagnostic is on the line containing `needle`.
@@ -117,6 +120,7 @@ end
 
 --- Sends `method` with the position of `needle` (plus `offset` columns) to the
 --- client named `client_name`, and returns the result.
+---@return any
 local function request(client_name, method, needle, offset)
   local row, col = find(needle)
   local client = assert(vim.lsp.get_clients({ bufnr = 0, name = client_name })[1], client_name .. " not attached")
@@ -151,12 +155,14 @@ end
 --- its edits the way a completion plugin would (resolving it first if needed).
 function M.complete(client_name, needle, label)
   local result = request(client_name, "textDocument/completion", needle, #needle)
-  local item = assert(
-    vim.iter(result.items or result):find(function(candidate)
-      return candidate.label == label
-    end),
-    "no completion item " .. label
-  )
+  local item
+  for _, candidate in ipairs(result.items or result) do
+    if candidate.label == label then
+      item = candidate
+      break
+    end
+  end
+  assert(item, "no completion item " .. label)
   local client = vim.lsp.get_clients({ bufnr = 0, name = client_name })[1]
   if not item.additionalTextEdits then
     item = assert(client:request_sync("completionItem/resolve", item, 10000, 0)).result

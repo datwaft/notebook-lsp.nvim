@@ -31,6 +31,7 @@ end
 
 --- Runs a Lua chunk in the child with `...` as its arguments, and returns its result.
 ---@param code string
+---@return any
 function Child:lua(code, ...)
   local result = vim.rpcrequest(self.channel, "nvim_exec_lua", code, { ... })
   if result == vim.NIL then -- nil doesn't survive RPC
@@ -41,6 +42,7 @@ end
 
 --- Calls `require("helpers.in_child")[fn](...)` in the child, and returns its result.
 ---@param fn string
+---@return any
 function Child:call(fn, ...)
   return self:lua("local fn = ...; return require('helpers.in_child')[fn](select(2, ...))", fn, ...)
 end

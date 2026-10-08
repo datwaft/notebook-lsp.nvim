@@ -1,0 +1,5 @@
+# .luarc.json is written by hand: lux would add the sources of busted and its
+# dependencies to it, while lua_ls ships type definitions for busted. So lux
+# writes its own where nothing reads it (`generate_luarc = false` would be
+# ignored: lx overrides it with its --no-luarc flag).
+luarc_file_name = ".lux/luarc.json"

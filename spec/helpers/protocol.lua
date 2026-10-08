@@ -114,7 +114,7 @@ function M.wait_attached(env, bufnr)
   local client
   local attached = vim.wait(1000, function()
     client = vim.lsp.get_clients({ bufnr = bufnr, name = env.name })[1]
-    return client ~= nil and client.initialized
+    return client ~= nil and client.initialized == true
   end, 5)
   assert(attached, ("%s did not attach to buffer %d"):format(env.name, bufnr))
   return client
