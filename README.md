@@ -32,14 +32,23 @@ To do that, the plugin extends their `vim.lsp.config` entries:
 - `root_dir` lets through only notebooks in the server's language, and gives
   every other buffer the root of the config's `root_markers`, as Neovim does
   when there is no `root_dir`
+- `get_language_id` gives notebooks their cells' language, which Neovim
+  matches the server's dynamic registrations against, and every other buffer
+  its filetype, as Neovim does by default
 - `capabilities` tells the server the client syncs notebooks
 
-If your own config sets `filetypes` or `root_dir` for one of these servers, it
-replaces the plugin's: keep `markdown` in `filetypes` and leave `root_dir`
-unset for notebooks to keep working. Outside notebooks, servers behave as they
-would without the plugin.
+If your own config sets `filetypes`, `root_dir` or `get_language_id` for one of
+these servers, it replaces the plugin's: keep `markdown` in `filetypes` and
+leave the other two unset for notebooks to keep working. Outside notebooks,
+servers behave as they would without the plugin.
 
 ## Known issues
+
+- Servers only get a notebook's code cells in its kernel's language. A server
+  whose notebook selector names no cells asks for all of them, prose included,
+  and gets those too.
+- A server's dynamic registration that selects documents only by a file
+  pattern, such as `**/*.py`, doesn't apply to notebooks.
 
 - basedpyright reports no diagnostics in notebooks: with Neovim's default
   capabilities it uses pull diagnostics, and it answers pulls for notebook

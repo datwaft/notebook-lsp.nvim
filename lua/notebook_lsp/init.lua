@@ -17,6 +17,9 @@ local FILETYPES = { R = "r", ["c++"] = "cpp", csharp = "cs" }
 -- NotebookCellKind.Code
 local CODE = 2
 
+-- The notebook type of Jupyter notebooks, as servers name it
+local NOTEBOOK_TYPE = "jupyter-notebook"
+
 --- Notebook buffers, by the URI Neovim sends their messages with.
 ---@type table<string, notebook_lsp.Notebook>
 local notebooks = {}
@@ -25,19 +28,38 @@ local notebooks = {}
 ---@type table<integer, true>
 local intercepted = {}
 
---- Whether the server syncs notebooks whose code cells are in `filetype`.
+--- Whether `filter`, a notebook type or a NotebookDocumentFilter, names `notebook`.
+---@param filter string|lsp.NotebookDocumentFilter
+---@param notebook notebook_lsp.Notebook
+local function names(filter, notebook)
+  if type(filter) == "string" then
+    return filter == "*" or filter == NOTEBOOK_TYPE
+  end
+  local pattern = filter.pattern
+  if type(pattern) == "table" then -- a RelativePattern
+    local base = pattern.baseUri
+    pattern = vim.uri_to_fname(type(base) == "string" and base or base.uri) .. "/" .. pattern.pattern
+  end ---@cast pattern string?
+  return (filter.notebookType == nil or filter.notebookType == NOTEBOOK_TYPE)
+    and (filter.scheme == nil or vim.startswith(notebook.notebook_uri, filter.scheme .. ":"))
+    and (pattern == nil or vim.glob.to_lpeg(pattern):match(vim.uri_to_fname(notebook.notebook_uri)) ~= nil)
+end
+
+--- Whether the server syncs `notebook`. A selector without cells is for all
+--- of them, prose included: the plugin syncs those it knows, the code cells in
+--- the kernel's language.
 ---@param client vim.lsp.Client
----@param filetype string
-local function syncs_notebooks(client, filetype)
+---@param notebook notebook_lsp.Notebook
+local function syncs_notebooks(client, notebook)
   local sync = client.server_capabilities.notebookDocumentSync
   for _, selector in ipairs(sync and sync.notebookSelector or {}) do
-    if selector.cells == nil then
-      return true
+    local cells = selector.cells ---@type {language: string}[]?
+    local in_language = cells == nil
+    for _, cell in ipairs(cells or {}) do
+      in_language = in_language or cell.language == notebook.filetype
     end
-    for _, cell in ipairs(selector.cells) do
-      if cell.language == filetype then
-        return true
-      end
+    if in_language and (selector.notebook == nil or names(selector.notebook, notebook)) then
+      return true
     end
   end
   return false
@@ -171,8 +193,8 @@ end
 ---@field indexes? integer[] for a request with several positions: which of them are the cell's, in its params' order
 
 --- The cells a request about `notebook` goes to: the cell of its position,
---- the cells of its positions, the cells its range overlaps (with the range
---- clipped to each), or every cell.
+--- the cells of its positions, the cells its range or ranges overlap (clipped
+--- to each), or every cell.
 ---@param notebook notebook_lsp.Notebook
 ---@param params table
 ---@return notebook_lsp.Target[]
@@ -195,6 +217,17 @@ local function targets(notebook, params)
   end
   local function before(a, b)
     return a.line < b.line or (a.line == b.line and a.character < b.character)
+  end
+  --- The part of `range` in the cell's code, if any.
+  local function clip(cell, range)
+    local start = { line = cell.start, character = 0 }
+    local finish = { line = cell.start + #cell.lines, character = 0 } -- just after the cell's code
+    if before(range.start, finish) and not before(range["end"], start) then
+      return {
+        start = before(range.start, start) and start or range.start,
+        ["end"] = before(finish, range["end"]) and finish or range["end"],
+      }
+    end
   end
 
   if params.position then
@@ -219,21 +252,26 @@ local function targets(notebook, params)
     return found
   end
   for _, cell in ipairs(notebook:read()) do
-    local range = params.range
-    if not range then
-      table.insert(found, target(cell))
-    else
-      local start = { line = cell.start, character = 0 }
-      local finish = { line = cell.start + #cell.lines, character = 0 } -- just after the cell's code
-      if before(range.start, finish) and not before(range["end"], start) then
-        table.insert(
-          found,
-          target(cell, {
-            start = before(range.start, start) and start or range.start,
-            ["end"] = before(finish, range["end"]) and finish or range["end"],
-          })
-        )
+    if params.ranges then
+      local ranges = {}
+      for _, range in ipairs(params.ranges) do
+        local clipped = clip(cell, range)
+        if clipped then
+          table.insert(ranges, clipped)
+        end
       end
+      if #ranges > 0 then
+        local cell_target = target(cell)
+        cell_target.params.ranges = translate.shift(ranges, -cell.start)
+        table.insert(found, cell_target)
+      end
+    elseif params.range then
+      local clipped = clip(cell, params.range)
+      if clipped then
+        table.insert(found, target(cell, clipped))
+      end
+    else
+      table.insert(found, target(cell))
     end
   end
   return found
@@ -429,7 +467,7 @@ local function intercept(client)
     return rpc.notify("notebookDocument/didOpen", {
       notebookDocument = {
         uri = state.notebook_uri,
-        notebookType = "jupyter-notebook",
+        notebookType = NOTEBOOK_TYPE,
         version = state.version,
         cells = vim.tbl_map(function(cell)
           return { kind = CODE, document = cell.uri }
@@ -632,6 +670,10 @@ local function intercept(client)
       if not notebook then
         return pass_through(method, params, callback, notify_reply)
       end
+      if method == "textDocument/willSaveWaitUntil" then
+        -- Cells are saved with their notebook, which the protocol has no "will save" for
+        return answer(nil, callback, notify_reply)
+      end
       -- The request is about the cells as they are now, which the server must
       -- know first. Neovim flushes its pending changes, but not for buffer 0
       if synced[notebook.uri] then
@@ -676,7 +718,7 @@ local function intercept(client)
 
       -- Neovim opens an attached buffer once the server is initialized, which
       -- is when the server tells whether it syncs notebooks
-      if method == "textDocument/didOpen" and not syncs_notebooks(client, notebook.filetype) then
+      if method == "textDocument/didOpen" and not syncs_notebooks(client, notebook) then
         rejected[uri] = true
         vim.schedule(function()
           vim.lsp.buf_detach_client(notebook.bufnr, client.id)
@@ -722,7 +764,8 @@ local function intercept(client)
     return notification(self, method, params)
   end
 
-  -- Requests from the server: edits to cells are edits to their notebook buffer.
+  -- Requests from the server: edits to cells are edits to their notebook buffer,
+  -- and cells to show are shown in it.
   -- The client's dispatchers look this method up on the client when a request
   -- arrives, which makes it the one place to see them before Neovim does
   ---@diagnostic disable-next-line: invisible
@@ -745,6 +788,12 @@ local function intercept(client)
         return { applied = false, failureReason = skipped .. " changed since the server made the edit" }
       end
       params = vim.tbl_extend("force", params, { edit = edit })
+    elseif method == "window/showDocument" and type(params) == "table" then
+      local shown = translate.to_client(params, nil, context)
+      if shown == nil then
+        return { success = false } -- a cell that's gone
+      end
+      params = shown
     end
     return server_request(self, method, params)
   end
@@ -752,8 +801,10 @@ end
 
 --- Extends the `vim.lsp.config` named `name` to also attach to jupytext
 --- Markdown notebooks whose kernel's language is one of `filetypes`. It sets
---- the config's `filetypes`, which replaces the server's own list, and its
---- `root_dir`: notebooks don't attach if the user's config sets either.
+--- the config's `filetypes`, which replaces the server's own list, its
+--- `root_dir` and its `get_language_id`: notebooks don't attach if the user's
+--- config sets `filetypes` or `root_dir`, and registrations don't match them
+--- if it sets `get_language_id`.
 ---@param name string
 ---@param filetypes string[] the server's own filetypes
 function M.extend(name, filetypes)
@@ -798,6 +849,13 @@ function M.extend(name, filetypes)
         intercept(assert(vim.lsp.get_client_by_id(client_id)))
       end
       on_dir(nil)
+    end,
+
+    -- A notebook's is its cells' language, which Neovim matches the document
+    -- selectors of the server's registrations against
+    get_language_id = function(bufnr, filetype)
+      local notebook = notebooks[vim.uri_from_bufnr(bufnr)]
+      return notebook and notebook.bufnr == bufnr and notebook.filetype or filetype
     end,
 
     capabilities = {
