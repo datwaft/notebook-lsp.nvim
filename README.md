@@ -14,7 +14,36 @@ formatting and rename work inside cells, and names are shared across cells.
 ## Requirements
 
 - Neovim nightly
-- Language servers that support the LSP notebook protocol
+- Language servers that support the LSP notebook protocol: the plugin knows
+  [ty](https://github.com/astral-sh/ty), [ruff](https://github.com/astral-sh/ruff),
+  [basedpyright](https://github.com/DetachHead/basedpyright) and
+  [pyright](https://github.com/microsoft/pyright), configured for example by
+  [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig)
+
+## Usage
+
+There is nothing to set up: enable the servers with `vim.lsp.enable()` as
+usual. When you open a jupytext Markdown notebook, the ones for its kernel's
+language attach to it, through the same clients that serve your `.py` files.
+
+To do that, the plugin extends their `vim.lsp.config` entries:
+
+- `filetypes` gets `markdown`, next to the server's own filetypes
+- `root_dir` lets through only notebooks in the server's language, and gives
+  every other buffer the root of the config's `root_markers`, as Neovim does
+  when there is no `root_dir`
+- `capabilities` tells the server the client syncs notebooks
+
+If your own config sets `filetypes` or `root_dir` for one of these servers, it
+replaces the plugin's: keep `markdown` in `filetypes` and leave `root_dir`
+unset for notebooks to keep working. Outside notebooks, servers behave as they
+would without the plugin.
+
+## Known issues
+
+- basedpyright reports no diagnostics in notebooks: with Neovim's default
+  capabilities it uses pull diagnostics, and it answers pulls for notebook
+  cells with nothing.
 
 ## Development
 
