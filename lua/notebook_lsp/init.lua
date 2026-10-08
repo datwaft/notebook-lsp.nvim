@@ -48,8 +48,10 @@ end
 local function locate(uri)
   for _, notebook in pairs(notebooks) do
     local cell = notebook:cell_of(uri)
-    if cell ~= nil then
-      return cell and { notebook = notebook, cell = cell }
+    if cell == false then
+      return false, notebook
+    elseif cell then
+      return { notebook = notebook, cell = cell }
     end
   end
   -- Only the plugin makes cell URIs: this one is of a cell or notebook that's gone
@@ -74,15 +76,20 @@ local RESOLVABLE = {
   ["textDocument/documentLink"] = true,
 }
 
---- The result of `method` from the server, about `where`, for Neovim. Items
---- that may be resolved later record their cell, so they resolve in it.
+--- The result of `method` from the server, about `where`, for Neovim: nil if
+--- the cell is gone since. Items that may be resolved later record their
+--- cell, so they resolve in it.
 ---@param method string
 ---@param result any
 ---@param where notebook_lsp.Where
-local function to_client(method, result, where)
-  local translated = translate.to_client(result, where, locate)
-  if RESOLVABLE[method] and type(result) == "table" then
-    local cell_uri = where.notebook:cell_uri(where.cell.id)
+---@param context notebook_lsp.Context
+local function to_client(method, result, where, context)
+  local cell_uri = where.notebook:cell_uri(where.cell.id)
+  if locate(cell_uri) == false then
+    return nil
+  end
+  local translated = translate.to_client(result, where, context)
+  if RESOLVABLE[method] and type(result) == "table" and translated ~= nil then
     local originals, items, default = result, translated, nil
     if result.items then -- a CompletionList
       originals, items = result.items, translated.items
@@ -240,6 +247,23 @@ local function intercept(client)
   ---@diagnostic disable-next-line: invisible
   local notification = client._notification
 
+  ---@type notebook_lsp.Context
+  local context = {
+    locate = locate,
+    current = function(where, version)
+      local state = synced[where.notebook.uri]
+      for _, cell in ipairs(state and state.cells or {}) do
+        if cell.id == where.cell.id then
+          return cell.version == version and cell.text == where.cell.text
+        end
+      end
+      return false
+    end,
+    skip = function(uri)
+      print("Buffer ", uri, " newer than edits.") -- what Neovim prints when it skips a document's edits
+    end,
+  }
+
   --- Shows the diagnostics the server published for the notebook's cells,
   --- where the cells are now. Those of cells that are gone go with them.
   ---@param notebook notebook_lsp.Notebook
@@ -252,7 +276,7 @@ local function intercept(client)
     for _, cell in ipairs(notebook:read()) do
       current[cell.id] = by_cell[cell.id]
       for _, diagnostic in ipairs(by_cell[cell.id] or {}) do
-        table.insert(diagnostics, translate.to_client(diagnostic, { notebook = notebook, cell = cell }, locate))
+        table.insert(diagnostics, translate.to_client(diagnostic, { notebook = notebook, cell = cell }, context))
       end
     end
     pushed[notebook.uri] = current
@@ -368,11 +392,28 @@ local function intercept(client)
   -- The requests to the server behind each of the plugin's own request ids
   local fanned_out = {} ---@type table<integer, integer[]>
 
+  --- Answers `callback` with `result` without asking the server, under a
+  --- request id of the plugin's own.
+  local function answer(result, callback, notify_reply)
+    last_request_id = last_request_id - 1
+    local id = last_request_id
+    vim.schedule(function()
+      if notify_reply then
+        notify_reply(id)
+      end
+      callback(nil, result, id)
+    end)
+    return true, id
+  end
+
   --- Sends `method` to `targets`, and answers `callback` with their results
   --- combined, under a request id of the plugin's own.
   ---@param method string
   ---@param targets_ notebook_lsp.Target[]
   local function fan_out(method, targets_, callback, notify_reply)
+    if #targets_ == 0 then
+      return answer(merge(method, {}, targets_), callback, notify_reply)
+    end
     last_request_id = last_request_id - 1
     local id, results, pending, failure = last_request_id, {}, #targets_, nil
     local function finish()
@@ -387,15 +428,11 @@ local function intercept(client)
       end
     end
 
-    if pending == 0 then
-      vim.schedule(finish)
-      return true, id
-    end
     fanned_out[id] = {}
     for i, target in ipairs(targets_) do
       local sent, request_id = rpc.request(method, target.params, function(err, result)
         failure = failure or err
-        results[i] = result and to_client(method, result, target.where)
+        results[i] = result and to_client(method, result, target.where, context)
         pending = pending - 1
         if pending == 0 then
           finish()
@@ -414,7 +451,7 @@ local function intercept(client)
   local function pass_through(method, params, callback, notify_reply)
     return rpc.request(method, params, function(err, result, id)
       if result ~= nil and next(notebooks) then
-        result = translate.to_client(result, nil, locate)
+        result = translate.to_client(result, nil, context)
       end
       callback(err, result, id)
     end, notify_reply)
@@ -430,10 +467,10 @@ local function intercept(client)
         end
         local where = locate(cell_uri)
         if not where then
-          error("notebook-lsp: resolving an item of a cell that no longer exists: " .. cell_uri)
+          return answer(params, callback, notify_reply) -- nothing to resolve in a cell that's gone
         end
         return rpc.request(method, item, function(err, result, id)
-          local resolved = result and translate.to_client(result, where, locate)
+          local resolved = result and translate.to_client(result, where, context)
           if type(resolved) == "table" then
             translate.tag(resolved, cell_uri, result)
           end
@@ -455,7 +492,7 @@ local function intercept(client)
       if #found == 1 and (params.position or params.range) then
         local target = found[1]
         return rpc.request(method, target.params, function(err, result, id)
-          callback(err, result and to_client(method, result, target.where), id)
+          callback(err, result and to_client(method, result, target.where, context), id)
         end, notify_reply)
       end
       return fan_out(method, found, callback, notify_reply)
@@ -534,7 +571,21 @@ local function intercept(client)
   ---@diagnostic disable-next-line: duplicate-set-field, invisible
   function client._server_request(self, method, params)
     if method == "workspace/applyEdit" and type(params) == "table" then
-      params = vim.tbl_extend("force", params, { edit = translate.to_client(params.edit, nil, locate) })
+      -- The server can be told: rather than skip part of the edit, refuse it all
+      local skipped = nil ---@type string?
+      local edit = translate.to_client(
+        params.edit,
+        nil,
+        vim.tbl_extend("force", context, {
+          skip = function(uri)
+            skipped = skipped or uri
+          end,
+        })
+      )
+      if skipped then
+        return { applied = false, failureReason = skipped .. " changed since the server made the edit" }
+      end
+      params = vim.tbl_extend("force", params, { edit = edit })
     end
     return server_request(self, method, params)
   end

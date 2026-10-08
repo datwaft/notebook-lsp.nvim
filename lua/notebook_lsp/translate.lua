@@ -9,8 +9,13 @@ local M = {}
 ---@field cell notebook_lsp.Cell
 
 --- The cell a URI names: nil when it doesn't name a cell, false when it names
---- a cell that no longer exists.
----@alias notebook_lsp.Locate fun(uri: string): notebook_lsp.Where|false|nil
+--- a cell that no longer exists (and its notebook, if that's still open).
+---@alias notebook_lsp.Locate fun(uri: string): notebook_lsp.Where|false|nil, notebook_lsp.Notebook?
+
+---@class notebook_lsp.Context what translating a server's values needs to know of the notebooks
+---@field locate notebook_lsp.Locate
+---@field current fun(where: notebook_lsp.Where, version: integer): boolean whether the cell's text is still the server's `version` of it
+---@field skip fun(uri: string) skips the edits to the notebook (or the cell that's gone) `uri`
 
 local function is_position(value)
   return type(value.line) == "number" and type(value.character) == "number"
@@ -40,40 +45,50 @@ function M.shift(value, lines)
   return out
 end
 
----@param locate notebook_lsp.Locate
----@param uri string
----@return notebook_lsp.Where?
-local function find(locate, uri)
-  local where = locate(uri)
-  assert(where ~= false, "notebook-lsp: the server refers to a cell that no longer exists: " .. uri)
-  return where or nil
-end
-
 --- `value` from the server, for Neovim: positions in cells become positions
 --- in their notebook buffer, and cell URIs the buffer's URI. Positions without
 --- a URI of their own are in `where`, the cell the request was about (nil when
 --- there was none). Edits to several cells of a notebook become edits to its
 --- buffer, applied together.
+---
+--- A value about a cell that's gone, like a Location, is nil, and so is
+--- whatever it's part of, up to the list it's in.
 ---@param value any
 ---@param where notebook_lsp.Where?
----@param locate notebook_lsp.Locate
-function M.to_client(value, where, locate)
+---@param context notebook_lsp.Context
+function M.to_client(value, where, context)
   if type(value) ~= "table" then
     return value
   end
   if is_position(value) then
     return where and M.shift(value, where.cell.start) or value
   end
+  if vim.islist(value) then
+    local out = like(value)
+    for _, item in ipairs(value) do
+      local translated = M.to_client(item, where, context)
+      if translated ~= nil then
+        table.insert(out, translated)
+      end
+    end
+    return out
+  end
 
   -- Where the positions in this value are: in a document it names (a
   -- Location, a TextDocumentEdit), or wherever its parent's are
-  local inner = where
+  local inner = where ---@type notebook_lsp.Where|false|nil
   if type(value.uri) == "string" then
-    inner = find(locate, value.uri)
+    inner = context.locate(value.uri)
   elseif type(value.textDocument) == "table" and type(value.textDocument.uri) == "string" then
-    inner = find(locate, value.textDocument.uri)
+    inner = context.locate(value.textDocument.uri)
   end
-  local target = type(value.targetUri) == "string" and find(locate, value.targetUri) or nil
+  local target = nil ---@type notebook_lsp.Where|false|nil
+  if type(value.targetUri) == "string" then
+    target = context.locate(value.targetUri)
+  end
+  if inner == false or target == false then
+    return nil
+  end
 
   local out = like(value)
   for key, item in pairs(value) do
@@ -84,15 +99,18 @@ function M.to_client(value, where, locate)
     elseif key == "targetUri" then
       out[key] = target and target.notebook.uri or item
     elseif key == "targetRange" or key == "targetSelectionRange" then
-      out[key] = M.to_client(item, target, locate)
+      out[key] = M.to_client(item, target, context)
     elseif key == "originSelectionRange" then
-      out[key] = M.to_client(item, where, locate)
+      out[key] = M.to_client(item, where, context)
     elseif key == "changes" and type(item) == "table" and not vim.islist(item) then
-      out[key] = M.changes(item, locate)
+      out[key] = M.changes(item, context)
     elseif key == "documentChanges" then
-      out[key] = M.document_changes(item, locate)
+      out[key] = M.document_changes(item, context)
     else
-      out[key] = M.to_client(item, inner, locate)
+      out[key] = M.to_client(item, inner, context)
+    end
+    if out[key] == nil then
+      return nil -- a part of it is about a cell that's gone
     end
   end
   -- The buffer's version is not the cell's
@@ -102,44 +120,84 @@ function M.to_client(value, where, locate)
   return out
 end
 
---- WorkspaceEdit.changes: the edits to a notebook's cells become one list of
---- edits to its buffer.
----@param changes table<string, lsp.TextEdit[]>
----@param locate notebook_lsp.Locate
-function M.changes(changes, locate)
-  local out = like(changes)
-  for uri, edits in pairs(changes) do
-    local where = find(locate, uri)
-    if where then
-      local key = where.notebook.uri
-      out[key] = vim.list_extend(out[key] or {}, M.to_client(edits, where, locate))
-    else
-      out[uri] = edits
+--- TextDocumentEdits from the server, for Neovim (other document changes stay
+--- as they are): the edits to a notebook's cells become one edit of its
+--- buffer, where the first of them was. If the server versioned the cells',
+--- it has the buffer's version (its changedtick), which Neovim checks as it
+--- applies it.
+---
+--- Like Neovim does with the edits for an older version of a document, a
+--- notebook's are skipped if one of its cells is gone, or changed since the
+--- version the server made them for.
+---@param changes any[]
+---@param context notebook_lsp.Context
+---@return any[]
+local function notebook_edits(changes, context)
+  local out, merged, stale = {}, {}, {} ---@type any[], table<string, lsp.TextDocumentEdit>, table<string, true>
+  for _, change in ipairs(changes) do
+    local where, owner = nil, nil ---@type notebook_lsp.Where|false|nil, notebook_lsp.Notebook?
+    if change.edits then
+      where, owner = context.locate(change.textDocument.uri)
     end
+    if where == nil then
+      table.insert(out, change)
+    else
+      local notebook = where and where.notebook or owner
+      local uri = notebook and notebook.uri or change.textDocument.uri
+      local version = change.textDocument.version
+      local versioned = version ~= nil and version ~= vim.NIL
+      if not where or (versioned and not context.current(where, version)) then
+        stale[uri] = true
+      end
+      if not merged[uri] then
+        merged[uri] = { textDocument = { uri = uri, version = vim.NIL }, edits = {} }
+        table.insert(out, merged[uri])
+      end
+      if where then
+        if versioned then
+          -- Not Neovim's version of it, which is 0 until it changes and never checked then
+          merged[uri].textDocument.version = vim.api.nvim_buf_get_changedtick(where.notebook.bufnr)
+        end
+        vim.list_extend(merged[uri].edits, M.to_client(change.edits, where, context) --[[@as lsp.TextEdit[] ]])
+      end
+    end
+  end
+
+  local kept = {}
+  for _, change in ipairs(out) do
+    local uri = change.textDocument and change.textDocument.uri
+    if merged[uri] == change and stale[uri] then
+      context.skip(uri)
+    else
+      table.insert(kept, change)
+    end
+  end
+  return kept
+end
+
+--- WorkspaceEdit.changes: the edits to a notebook's cells become one list of
+--- edits to its buffer, skipped if one of its cells is gone.
+---@param changes table<string, lsp.TextEdit[]>
+---@param context notebook_lsp.Context
+function M.changes(changes, context)
+  local edits = {}
+  for uri, list in pairs(changes) do
+    table.insert(edits, { textDocument = { uri = uri, version = vim.NIL }, edits = list })
+  end
+  local out = like(changes)
+  for _, change in ipairs(notebook_edits(edits, context)) do
+    out[change.textDocument.uri] = change.edits
   end
   return out
 end
 
 --- WorkspaceEdit.documentChanges: the edits to a notebook's cells become one
---- TextDocumentEdit of its buffer, where the first of them was.
+--- TextDocumentEdit of its buffer, where the first of them was, skipped if one
+--- of its cells is gone or changed since.
 ---@param changes any[]
----@param locate notebook_lsp.Locate
-function M.document_changes(changes, locate)
-  local out, merged = like(changes), {} ---@type any[], table<string, lsp.TextDocumentEdit>
-  for _, change in ipairs(changes) do
-    local translated = M.to_client(change, nil, locate)
-    local where = change.edits and find(locate, change.textDocument.uri)
-    local uri = where and where.notebook.uri
-    if uri and merged[uri] then
-      vim.list_extend(merged[uri].edits, translated.edits)
-    else
-      if uri then
-        merged[uri] = translated
-      end
-      table.insert(out, translated)
-    end
-  end
-  return out
+---@param context notebook_lsp.Context
+function M.document_changes(changes, context)
+  return setmetatable(notebook_edits(changes, context), getmetatable(changes))
 end
 
 -- The key under which an item's `data` records the cell it came from
