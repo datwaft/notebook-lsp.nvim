@@ -1,20 +1,20 @@
--- The PoC's scenario with real servers: basedpyright and ruff on
+-- The main scenario with real servers: ty and ruff on
 -- spec/fixtures/projects/python/analysis.md, through Neovim's own LSP functions.
 local child_process = require("helpers.child")
 local project = require("helpers.project")
 
-local SERVERS = { "basedpyright", "ruff" }
+local SERVERS = { "ruff", "ty" }
 
 -- {text on the line, Lua pattern of the message}
 local EXPECTED_DIAGNOSTICS = {
-  { 'x: int = "oops"', "not assignable" }, -- basedpyright
-  { "return x + Ordered", '"Ordered" is not defined' }, -- basedpyright
+  { 'x: int = "oops"', "is not assignable to `int`" }, -- ty
+  { "return x + Ordered", "Name `Ordered` used when not defined" }, -- ty
   { "return x + Ordered", "Undefined name `Ordered`" }, -- ruff
-  { 'helper("not an int")', 'parameter "n"' }, -- basedpyright, needs utils.py's signature
+  { 'helper("not an int")', "Argument to function `helper` is incorrect" }, -- ty, needs utils.py's signature
   { "import os", "`os` imported but unused" }, -- ruff
 }
 
-describe("basedpyright and ruff on a notebook", function()
+describe("ty and ruff on a notebook", function()
   local child ---@type Child
   local dir ---@type string
 
@@ -56,14 +56,13 @@ describe("basedpyright and ruff on a notebook", function()
     assert.same({
       ["import os"] = true,
       ['x: int = "oops"'] = true,
-      ["def f():"] = true, -- basedpyright: return type is unknown
       ["    return x + Ordered"] = true,
       ['y = helper("not an int")'] = true,
     }, rows)
   end)
 
   it("shares names between cells", function()
-    assert.is_false(child:call("has_diagnostic", "return x + Ordered", '"x" is not defined'))
+    assert.is_false(child:call("has_diagnostic", "return x + Ordered", "`x` used when not defined"))
   end)
 
   it("accepts IPython magics", function()
@@ -77,20 +76,20 @@ describe("basedpyright and ruff on a notebook", function()
   end)
 
   it("shows hover information, including from other files", function()
-    assert.matches("def helper%(n: int%) %-> str", child:call("hover", "basedpyright", 'helper("not'))
-    assert.is_nil(child:call("hover", "basedpyright", "The prose mentions"))
+    assert.matches("def helper%(n: int%) %-> str", child:call("hover", "ty", 'helper("not'))
+    assert.is_nil(child:call("hover", "ty", "The prose mentions"))
   end)
 
   it("goes to definitions in other cells and in other files", function()
     local x_row = child:call("row", 'x: int = "oops"')
-    assert.same({ { file = "analysis.md", row = x_row } }, child:call("definition", "basedpyright", "return x", 7))
-    assert.same({ { file = "utils.py", row = 0 } }, child:call("definition", "basedpyright", 'helper("not'))
+    assert.same({ { file = "analysis.md", row = x_row } }, child:call("definition", "ty", "return x", 7))
+    assert.same({ { file = "utils.py", row = 0 } }, child:call("definition", "ty", 'helper("not'))
   end)
 
   it("puts auto-imports at the top of the cell being edited", function()
-    child:call("complete", "basedpyright", "Ordered", "OrderedDict")
+    child:call("complete", "ty", "Ordered", "OrderedDict")
     local text = child:call("text")
-    assert.matches("```python\nfrom typing import OrderedDict\n+def f%(%):\n    return x %+ OrderedDict\n", text)
+    assert.matches("```python\nfrom collections import OrderedDict\ndef f%(%):\n    return x %+ OrderedDict\n", text)
   end)
 
   it("applies ruff's code actions inside the cell", function()
@@ -122,7 +121,7 @@ describe("basedpyright and ruff on a notebook", function()
     child:call("edit", dir .. "/utils.py")
     assert(child:wait_for(30000, "attached_exactly", SERVERS))
     assert.equal(2, child:call("client_count"))
-    child:call("rename", "basedpyright", "helper", "to_text", notebook)
+    child:call("rename", "ty", "helper", "to_text", notebook)
     local text = child:call("text_of", notebook)
     assert.truthy(text:find("from utils import to_text", 1, true))
     assert.truthy(text:find('y = to_text("not an int")', 1, true))

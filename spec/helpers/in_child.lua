@@ -174,6 +174,13 @@ function M.complete(client_name, needle, label)
     item = assert(client:request_sync("completionItem/resolve", item, 10000, 0)).result
   end
   local edit = item.textEdit
+  if not edit then
+    -- Without a text edit, the item replaces the word being typed
+    local row, col = find(needle)
+    local finish = { line = row, character = col + #needle }
+    local start = { line = row, character = finish.character - #needle:match("[%w_]*$") }
+    edit = { range = { start = start, ["end"] = finish }, newText = item.insertText or item.label }
+  end
   local edits = { { range = edit.range or edit.replace, newText = edit.newText } }
   vim.list_extend(edits, item.additionalTextEdits or {})
   vim.lsp.util.apply_text_edits(edits, vim.api.nvim_get_current_buf(), client.offset_encoding)
