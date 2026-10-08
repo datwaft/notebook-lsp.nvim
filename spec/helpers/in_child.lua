@@ -11,6 +11,8 @@ local M = {}
 ---@param servers string[]
 function M.setup(servers)
   vim.cmd("filetype on")
+  -- An error must fail the test (see M.errors), not wait at a prompt
+  vim.o.more = false
   vim.cmd.runtime("plugin/notebook_lsp.lua")
   local runtime = vim.fn.tempname()
   vim.fn.mkdir(runtime .. "/lsp", "p")
@@ -26,6 +28,15 @@ function M.setup(servers)
   end
   vim.opt.runtimepath:append(runtime)
   vim.lsp.enable(servers)
+end
+
+--- Errors printed so far, such as those of callbacks, which no call returns.
+---@return string[]
+function M.errors()
+  local messages = vim.split(vim.fn.execute("messages"), "\n", { plain = true })
+  return vim.tbl_filter(function(line)
+    return line:match("^E%d+:") ~= nil or line:find("stack traceback", 1, true) ~= nil
+  end, messages)
 end
 
 ---@param path string

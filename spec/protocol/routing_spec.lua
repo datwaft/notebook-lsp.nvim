@@ -162,6 +162,48 @@ describe("request routing", function()
     assert.same(expected, protocol.lines(bufnr))
   end)
 
+  -- Tokens are encoded relative to the token before them, so they can't simply be put together.
+  -- Without a result id, Neovim asks for all the tokens again instead of the changes since then.
+  it("combines the semantic tokens of every cell, without a result id", function()
+    local bufnr = protocol.open_example(env)
+    handlers["textDocument/semanticTokens/full"] = function(params)
+      local data = {
+        ["1"] = { 0, 0, 6, 0, 0, 1, 0, 1, 1, 0 }, -- `import` in `import os`, `x` in `x = 1`
+        ["2"] = { 0, 4, 1, 2, 0 }, -- `f` in `def f():`
+      }
+      return { resultId = "r", data = data[params.textDocument.uri:match("#c(%d+)$")] }
+    end
+    assert.same({
+      data = {
+        rows.cell1,
+        0,
+        6,
+        0,
+        0,
+        1,
+        0,
+        1,
+        1,
+        0,
+        rows.cell2 - rows.cell1 - 1,
+        4,
+        1,
+        2,
+        0,
+      },
+    }, request(bufnr, "textDocument/semanticTokens/full"))
+  end)
+
+  it("maps locations in cells in answers about .py files", function()
+    local bufnr, cells = protocol.open_example(env)
+    handlers["textDocument/references"] = function()
+      return { { uri = cells[2], range = range(1, 11, 1) } }
+    end
+    local py = protocol.open(env, "utils.py", { "x = 1" })
+    local result = request(py, "textDocument/references", { line = 0, character = 0 })
+    assert.same({ { uri = vim.uri_from_bufnr(bufnr), range = range(rows.cell2 + 1, 11, 1) } }, result)
+  end)
+
   it("passes requests for .py files through untouched", function()
     protocol.open_example(env)
     local py = protocol.open(env, "utils.py", { "def helper(): pass" })

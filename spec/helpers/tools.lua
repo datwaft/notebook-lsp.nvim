@@ -8,6 +8,8 @@ M.root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h")
 M.env = {
   UV_CACHE_DIR = M.root .. "/.tests/uv/cache",
   UV_PYTHON_INSTALL_DIR = M.root .. "/.tests/uv/python",
+  -- Logs of the child Neovim, such as the LSP log, instead of the user's
+  XDG_STATE_HOME = M.root .. "/.tests/state",
 }
 
 M.jupytext = { "uvx", "--from", "jupytext==1.19.6", "jupytext" }

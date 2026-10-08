@@ -1,3 +1,4 @@
+local fake_server = require("helpers.fake_server")
 local protocol = require("helpers.protocol")
 
 local rows = protocol.example.rows
@@ -92,5 +93,87 @@ describe("diagnostics", function()
     local related = vim.diagnostic.get(bufnr)[1].user_data.lsp.relatedInformation[1].location
     assert.equal(vim.uri_from_bufnr(bufnr), related.uri)
     assert.equal(rows.cell1 + 1, related.range.start.line)
+  end)
+
+  -- The server may publish for a cell before it hears that the cell is gone.
+  it("ignores diagnostics published for a removed cell", function()
+    local bufnr, cells = protocol.open_example(env)
+    vim.api.nvim_buf_set_lines(bufnr, rows.cell2 - 1, rows.cell2 + 3, true, {})
+    env.server:wait_for("notebookDocument/didChange")
+    publish(cells[2], { diagnostic(1, 11, "undefined") })
+    vim.wait(100)
+    assert.same({}, shown(bufnr))
+  end)
+end)
+
+describe("pulled diagnostics", function()
+  local env ---@type ProtocolEnv
+
+  before_each(function()
+    local capabilities = vim.deepcopy(fake_server.capabilities)
+    capabilities.diagnosticProvider = { interFileDependencies = false, workspaceDiagnostics = false }
+    env = protocol.start({
+      capabilities = capabilities,
+      handlers = {
+        ["textDocument/diagnostic"] = function(params)
+          local items = {
+            ["1"] = { diagnostic(0, 7, "unused") },
+            ["2"] = { diagnostic(1, 11, "undefined") },
+          }
+          return { kind = "full", resultId = "r", items = items[params.textDocument.uri:match("#c(%d+)$")] }
+        end,
+      },
+    })
+  end)
+
+  after_each(function()
+    protocol.stop()
+  end)
+
+  local function wait_shown(bufnr, expected)
+    local found = vim.wait(1000, function()
+      return vim.deep_equal(expected, shown(bufnr))
+    end)
+    assert.is_true(found, vim.inspect(shown(bufnr)))
+  end
+
+  it("combines the diagnostics of every cell", function()
+    local bufnr = protocol.open_example(env)
+    wait_shown(bufnr, {
+      { lnum = rows.cell1, col = 7, message = "unused" },
+      { lnum = rows.cell2 + 1, col = 11, message = "undefined" },
+    })
+  end)
+
+  -- The cells' reports can't be compared to a report of the whole notebook.
+  it("pulls full reports again when cells move", function()
+    local bufnr = protocol.open_example(env)
+    wait_shown(bufnr, {
+      { lnum = rows.cell1, col = 7, message = "unused" },
+      { lnum = rows.cell2 + 1, col = 11, message = "undefined" },
+    })
+    vim.api.nvim_buf_set_lines(bufnr, rows.prose, rows.prose, true, { "More", "prose." })
+    wait_shown(bufnr, {
+      { lnum = rows.cell1, col = 7, message = "unused" },
+      { lnum = rows.cell2 + 3, col = 11, message = "undefined" },
+    })
+    for _, params in ipairs(env.server:received("textDocument/diagnostic")) do
+      assert.is_nil(params.previousResultId)
+    end
+  end)
+
+  -- ruff does both for notebook cells, which would show each of its diagnostics twice.
+  it("ignores diagnostics the server also pushes", function()
+    local bufnr, cells = protocol.open_example(env)
+    env.server:notify(
+      "textDocument/publishDiagnostics",
+      { uri = cells[1], diagnostics = { diagnostic(0, 7, "unused") } }
+    )
+    wait_shown(bufnr, {
+      { lnum = rows.cell1, col = 7, message = "unused" },
+      { lnum = rows.cell2 + 1, col = 11, message = "undefined" },
+    })
+    vim.wait(100)
+    assert.equal(2, #vim.diagnostic.get(bufnr))
   end)
 end)

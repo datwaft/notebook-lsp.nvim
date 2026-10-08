@@ -112,4 +112,21 @@ describe("edits from the server", function()
     wait_row(bufnr, rows.cell1, "x = 1")
     assert.same({ opaque = true }, env.server:wait_for("codeAction/resolve").data)
   end)
+
+  -- Neovim resolves an action with data even when it has an edit already, as ruff's have.
+  it("resolves a code action that has an edit as the server gave it", function()
+    local bufnr, cells = protocol.open_example(env)
+    local action = {
+      title = "Remove unused import",
+      data = cells[1],
+      edit = { changes = { [cells[1]] = { delete_line(0) } } },
+    }
+    handlers["textDocument/codeAction"] = function()
+      return { action }
+    end
+    vim.api.nvim_win_set_cursor(0, { rows.cell1 + 1, 7 })
+    vim.lsp.buf.code_action({ apply = true })
+    wait_row(bufnr, rows.cell1, "x = 1")
+    assert.same(action, env.server:wait_for("codeAction/resolve"))
+  end)
 end)

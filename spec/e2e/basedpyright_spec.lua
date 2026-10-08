@@ -20,8 +20,10 @@ describe("basedpyright on a notebook", function()
   end)
 
   after_each(function()
+    local errors = child:call("errors")
     child:stop()
     vim.fn.delete(dir, "rf")
+    assert.same({}, errors, "errors were printed")
   end)
 
   it("shows hover information, including from other files", function()

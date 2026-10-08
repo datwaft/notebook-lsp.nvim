@@ -36,8 +36,10 @@ describe("ty and ruff on a notebook", function()
   end)
 
   after_each(function()
+    local errors = child:call("errors")
     child:stop()
     vim.fn.delete(dir, "rf")
+    assert.same({}, errors, "errors were printed")
   end)
 
   it("doesn't attach to Markdown that isn't a jupytext notebook", function()
