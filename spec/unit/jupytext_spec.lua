@@ -32,6 +32,12 @@ describe("jupytext.read", function()
     end, "unsupported jupytext Markdown format version 1.1")
   end)
 
+  it("rejects custom language magics, which change what a code cell is", function()
+    assert.error_matches(function()
+      read("custom_language_magics.md")
+    end, "unsupported jupytext option: custom_language_magics")
+  end)
+
   it("rejects notebooks without a kernel language", function()
     assert.error_matches(function()
       read("no_language.md")

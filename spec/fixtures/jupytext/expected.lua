@@ -147,4 +147,46 @@ return {
       },
     },
   },
+  {
+    file = "main_language_over_kernel.md",
+    description = "prefers jupytext's main_language over the kernel's language, as multi-language kernels need",
+    notebook = {
+      language = "python",
+      cells = {
+        { language = "python", start = 16, lines = { "x = 1" } },
+        { language = "R", start = 20, lines = { "r <- 1" } },
+      },
+    },
+  },
+  {
+    file = "fence_in_string.md",
+    description = "doesn't end a cell at a fence inside a multi-line string",
+    notebook = {
+      language = "python",
+      cells = {
+        { language = "python", start = 15, lines = { 'doc = """', "```", '"""' } },
+        { language = "python", start = 21, lines = { "last = 1" } },
+      },
+    },
+  },
+  {
+    file = "inactive.md",
+    description = "ignores cells that are not active in notebooks",
+    notebook = {
+      language = "python",
+      cells = {
+        { language = "python", start = 23, lines = { "in_notebooks = 1" } },
+      },
+    },
+  },
+  {
+    file = "hidden_header.md",
+    description = "reads a header hidden in an HTML comment",
+    notebook = {
+      language = "python",
+      cells = {
+        { language = "python", start = 20, lines = { "hidden = 1" } },
+      },
+    },
+  },
 }
