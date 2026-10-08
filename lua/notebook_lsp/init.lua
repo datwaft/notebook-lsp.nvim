@@ -7,6 +7,7 @@
 -- Everything else passes through untouched.
 local jupytext = require("notebook_lsp.jupytext")
 local Notebook = require("notebook_lsp.notebook")
+local translate = require("notebook_lsp.translate")
 
 local M = {}
 
@@ -41,6 +42,124 @@ local function syncs_notebooks(client, filetype)
   end
   return false
 end
+
+--- The cell `uri` names, among the notebooks' cells.
+---@type notebook_lsp.Locate
+local function locate(uri)
+  for _, notebook in pairs(notebooks) do
+    local cell = notebook:cell_of(uri)
+    if cell ~= nil then
+      return cell and { notebook = notebook, cell = cell }
+    end
+  end
+end
+
+-- Requests that resolve an item of an earlier result, and the results that carry such items
+local RESOLVE = {
+  ["completionItem/resolve"] = true,
+  ["codeAction/resolve"] = true,
+  ["codeLens/resolve"] = true,
+  ["inlayHint/resolve"] = true,
+  ["documentLink/resolve"] = true,
+}
+local RESOLVABLE = {
+  ["textDocument/completion"] = true,
+  ["textDocument/codeAction"] = true,
+  ["textDocument/codeLens"] = true,
+  ["textDocument/inlayHint"] = true,
+  ["textDocument/documentLink"] = true,
+}
+
+--- The result of `method` from the server, about `where`, for Neovim. Items
+--- that may be resolved later record their cell, so they resolve in it.
+---@param method string
+---@param result any
+---@param where notebook_lsp.Where
+local function to_client(method, result, where)
+  local translated = translate.to_client(result, where, locate)
+  if RESOLVABLE[method] and type(translated) == "table" then
+    local cell_uri = where.notebook:cell_uri(where.cell.id)
+    local items, default = translated, nil
+    if translated.items then -- a CompletionList
+      items, default = translated.items, translated.itemDefaults and translated.itemDefaults.data
+    end
+    for _, item in ipairs(items) do
+      -- A code action may be a Command, which has nothing to resolve
+      if type(item) == "table" and type(item.command) ~= "string" then
+        translate.tag(item, cell_uri, item.data == nil and default or item.data)
+      end
+    end
+  end
+  return translated
+end
+
+---@class (private) notebook_lsp.Target a cell a request goes to, and the request as that cell's
+---@field where notebook_lsp.Where
+---@field params table
+
+--- The cells a request about `notebook` goes to: the cell of its position, the
+--- cells its range overlaps (with the range clipped to each), or every cell.
+---@param notebook notebook_lsp.Notebook
+---@param params table
+---@return notebook_lsp.Target[]
+local function targets(notebook, params)
+  local function target(cell, range)
+    local cell_params = translate.shift(vim.tbl_extend("force", params, { range = range }), -cell.start)
+    cell_params.textDocument = vim.tbl_extend("force", cell_params.textDocument, { uri = notebook:cell_uri(cell.id) })
+    return { where = { notebook = notebook, cell = cell }, params = cell_params }
+  end
+  local function before(a, b)
+    return a.line < b.line or (a.line == b.line and a.character < b.character)
+  end
+
+  if params.position then
+    local cell = notebook:cell_at(params.position.line)
+    return cell and { target(cell) } or {}
+  end
+  local found = {}
+  for _, cell in ipairs(notebook:read()) do
+    local range = params.range
+    if not range then
+      table.insert(found, target(cell))
+    else
+      local start = { line = cell.start, character = 0 }
+      local finish = { line = cell.start + #cell.lines, character = 0 } -- just after the cell's code
+      if before(range.start, finish) and not before(range["end"], start) then
+        table.insert(
+          found,
+          target(cell, {
+            start = before(range.start, start) and start or range.start,
+            ["end"] = before(finish, range["end"]) and finish or range["end"],
+          })
+        )
+      end
+    end
+  end
+  return found
+end
+
+--- One result of `method` for the notebook out of the results for its cells.
+---@param method string
+---@param results any[] by target; nil for no result
+---@param count integer the number of targets
+local function merge(method, results, count)
+  local merged
+  for i = 1, count do
+    local result = results[i]
+    if result ~= nil and result ~= vim.NIL then
+      assert(
+        type(result) == "table" and vim.islist(result),
+        ("notebook-lsp: can't combine the results of %s for several cells"):format(method)
+      )
+      merged = vim.list_extend(merged or {}, result)
+    end
+  end
+  return merged
+end
+
+-- Ids of the requests the plugin answers itself or sends to several cells:
+-- negative, so that they never clash with the ids of the client's requests
+local last_request_id = 0
 
 ---@class (private) notebook_lsp.Synced what a server was told about a notebook
 ---@field version integer
@@ -166,8 +285,94 @@ local function intercept(client)
     })
   end
 
+  -- The requests to the server behind each of the plugin's own request ids
+  local fanned_out = {} ---@type table<integer, integer[]>
+
+  --- Sends `method` to `targets`, and answers `callback` with their results
+  --- combined, under a request id of the plugin's own.
+  ---@param method string
+  ---@param targets_ notebook_lsp.Target[]
+  local function fan_out(method, targets_, callback, notify_reply)
+    last_request_id = last_request_id - 1
+    local id, results, pending, failure = last_request_id, {}, #targets_, nil
+    local function finish()
+      fanned_out[id] = nil
+      if notify_reply then
+        notify_reply(id)
+      end
+      if failure then
+        callback(failure, nil, id)
+      else
+        callback(nil, merge(method, results, #targets_), id)
+      end
+    end
+
+    if pending == 0 then
+      vim.schedule(finish)
+      return true, id
+    end
+    fanned_out[id] = {}
+    for i, target in ipairs(targets_) do
+      local sent, request_id = rpc.request(method, target.params, function(err, result)
+        failure = failure or err
+        results[i] = result and to_client(method, result, target.where)
+        pending = pending - 1
+        if pending == 0 then
+          finish()
+        end
+      end)
+      if not sent then
+        return false
+      end
+      table.insert(fanned_out[id], request_id)
+    end
+    return true, id
+  end
+
   client.rpc = setmetatable({
+    request = function(method, params, callback, notify_reply)
+      -- An item of an earlier result resolves in the cell it came from
+      if RESOLVE[method] and type(params) == "table" then
+        local cell_uri, item = translate.untag(params)
+        if not cell_uri then
+          return rpc.request(method, params, callback, notify_reply)
+        end
+        local where = locate(cell_uri)
+        if not where then
+          error("notebook-lsp: resolving an item of a cell that no longer exists: " .. cell_uri)
+        end
+        return rpc.request(method, translate.shift(item, -where.cell.start), function(err, result, id)
+          local resolved = result and translate.to_client(result, where, locate)
+          if type(resolved) == "table" then
+            translate.tag(resolved, cell_uri, resolved.data)
+          end
+          callback(err, resolved, id)
+        end, notify_reply)
+      end
+
+      local document = type(params) == "table" and params.textDocument or nil
+      local notebook = type(document) == "table" and notebooks[document.uri]
+      if not notebook then
+        return rpc.request(method, params, callback, notify_reply)
+      end
+      local found = targets(notebook, params)
+      if #found == 1 and (params.position or params.range) then
+        local target = found[1]
+        return rpc.request(method, target.params, function(err, result, id)
+          callback(err, result and to_client(method, result, target.where), id)
+        end, notify_reply)
+      end
+      return fan_out(method, found, callback, notify_reply)
+    end,
+
     notify = function(method, params)
+      if method == "$/cancelRequest" and type(params.id) == "number" and params.id < 0 then
+        for _, id in ipairs(fanned_out[params.id] or {}) do
+          rpc.notify(method, { id = id })
+        end
+        return true
+      end
+
       local document = type(params) == "table" and params.textDocument or nil
       local uri = document and document.uri ---@type string?
       local notebook = uri and notebooks[uri]
@@ -203,6 +408,19 @@ local function intercept(client)
       return true
     end,
   }, { __index = rpc })
+
+  -- Requests from the server: edits to cells are edits to their notebook buffer.
+  -- The client's dispatchers look this method up on the client when a request
+  -- arrives, which makes it the one place to see them before Neovim does
+  ---@diagnostic disable-next-line: invisible
+  local server_request = client._server_request
+  ---@diagnostic disable-next-line: duplicate-set-field, invisible
+  function client._server_request(self, method, params)
+    if method == "workspace/applyEdit" and type(params) == "table" then
+      params = vim.tbl_extend("force", params, { edit = translate.to_client(params.edit, nil, locate) })
+    end
+    return server_request(self, method, params)
+  end
 end
 
 --- Extends the `vim.lsp.config` named `name` to also attach to jupytext

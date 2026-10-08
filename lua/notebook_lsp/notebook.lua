@@ -52,6 +52,34 @@ function Notebook:cell_uri(id)
   return ("%s#c%d"):format((self.notebook_uri:gsub("^file:", "vscode-notebook-cell:")), id)
 end
 
+--- The cell that `uri` names, if it names one of this notebook's cells; false
+--- if it names a cell that no longer exists.
+---@param uri string
+---@return notebook_lsp.Cell|false|nil
+function Notebook:cell_of(uri)
+  local id = tonumber(uri:match("#c(%d+)$"))
+  if not id or self:cell_uri(id) ~= uri then
+    return nil
+  end
+  for _, cell in ipairs(self:read()) do
+    if cell.id == id then
+      return cell
+    end
+  end
+  return false
+end
+
+--- The cell whose code includes row `row`, if any.
+---@param row integer 0-based
+---@return notebook_lsp.Cell?
+function Notebook:cell_at(row)
+  for _, cell in ipairs(self:read()) do
+    if row >= cell.start and row < cell.start + #cell.lines then
+      return cell
+    end
+  end
+end
+
 --- The code cells in the buffer as it is now, in order.
 ---@return notebook_lsp.Cell[]
 function Notebook:read()
