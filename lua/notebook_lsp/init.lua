@@ -52,6 +52,10 @@ local function locate(uri)
       return cell and { notebook = notebook, cell = cell }
     end
   end
+  -- Only the plugin makes cell URIs: this one is of a cell or notebook that's gone
+  if vim.startswith(uri, "vscode-notebook-cell:") then
+    return false
+  end
 end
 
 -- Requests that resolve an item of an earlier result, and the results that carry such items
@@ -77,16 +81,21 @@ local RESOLVABLE = {
 ---@param where notebook_lsp.Where
 local function to_client(method, result, where)
   local translated = translate.to_client(result, where, locate)
-  if RESOLVABLE[method] and type(translated) == "table" then
+  if RESOLVABLE[method] and type(result) == "table" then
     local cell_uri = where.notebook:cell_uri(where.cell.id)
-    local items, default = translated, nil
-    if translated.items then -- a CompletionList
-      items, default = translated.items, translated.itemDefaults and translated.itemDefaults.data
+    local originals, items, default = result, translated, nil
+    if result.items then -- a CompletionList
+      originals, items = result.items, translated.items
+      default = result.itemDefaults and result.itemDefaults.data
     end
-    for _, item in ipairs(items) do
+    for i, original in ipairs(originals) do
       -- A code action may be a Command, which has nothing to resolve
-      if type(item) == "table" and type(item.command) ~= "string" then
-        translate.tag(item, cell_uri, item.data == nil and default or item.data)
+      if type(original) == "table" and type(original.command) ~= "string" then
+        if original.data == nil and default ~= nil then
+          -- What the client would send: the item with the list's default data
+          original = vim.tbl_extend("force", original, { data = default })
+        end
+        translate.tag(items[i], cell_uri, original)
       end
     end
   end
@@ -138,11 +147,57 @@ local function targets(notebook, params)
   return found
 end
 
+--- The semantic tokens of the cells (LSP's encoding: five numbers per token,
+--- its line and start relative to the token before it) as the notebook's.
+---@param results any[] by target
+---@param targets_ notebook_lsp.Target[]
+---@return integer[]
+local function merge_tokens(results, targets_)
+  local data, last_line, last_start = {}, 0, 0
+  for i, target in ipairs(targets_) do
+    local tokens = results[i] and results[i].data or {}
+    local line, start = 0, 0 -- in the cell
+    for j = 1, #tokens, 5 do
+      line = line + tokens[j]
+      start = tokens[j] == 0 and start + tokens[j + 1] or tokens[j + 1]
+      local row = target.where.cell.start + line
+      vim.list_extend(data, {
+        row - last_line,
+        row == last_line and start - last_start or start,
+        tokens[j + 2],
+        tokens[j + 3],
+        tokens[j + 4],
+      })
+      last_line, last_start = row, start
+    end
+  end
+  return data
+end
+
 --- One result of `method` for the notebook out of the results for its cells.
 ---@param method string
 ---@param results any[] by target; nil for no result
----@param count integer the number of targets
-local function merge(method, results, count)
+---@param targets_ notebook_lsp.Target[]
+local function merge(method, results, targets_)
+  local count = #targets_
+  if method == "textDocument/semanticTokens/full" or method == "textDocument/semanticTokens/range" then
+    -- Without a result id: the next request can't be for the changes since this one
+    return { data = merge_tokens(results, targets_) }
+  end
+
+  -- A full report of the notebook's diagnostics: the cells' reports were full too
+  if method == "textDocument/diagnostic" then
+    local items = {}
+    for i = 1, count do
+      local report = results[i]
+      if report then
+        assert(report.kind == "full", "notebook-lsp: a cell's diagnostic report is not full")
+        vim.list_extend(items, report.items)
+      end
+    end
+    return { kind = "full", items = items }
+  end
+
   local merged
   for i = 1, count do
     local result = results[i]
@@ -179,6 +234,30 @@ local function intercept(client)
   -- By the Markdown buffer's URI
   local rejected = {} ---@type table<string, true>
   local synced = {} ---@type table<string, notebook_lsp.Synced>
+  -- What the server last published for each cell, in the cell's lines, by cell id
+  local pushed = {} ---@type table<string, table<integer, lsp.Diagnostic[]>>
+
+  ---@diagnostic disable-next-line: invisible
+  local notification = client._notification
+
+  --- Shows the diagnostics the server published for the notebook's cells,
+  --- where the cells are now. Those of cells that are gone go with them.
+  ---@param notebook notebook_lsp.Notebook
+  local function show_diagnostics(notebook)
+    local by_cell = pushed[notebook.uri]
+    if not by_cell then
+      return
+    end
+    local current, diagnostics = {}, {}
+    for _, cell in ipairs(notebook:read()) do
+      current[cell.id] = by_cell[cell.id]
+      for _, diagnostic in ipairs(by_cell[cell.id] or {}) do
+        table.insert(diagnostics, translate.to_client(diagnostic, { notebook = notebook, cell = cell }, locate))
+      end
+    end
+    pushed[notebook.uri] = current
+    notification(client, "textDocument/publishDiagnostics", { uri = notebook.uri, diagnostics = diagnostics })
+  end
 
   ---@param notebook notebook_lsp.Notebook
   ---@param cell {id: integer, text: string, version: integer}
@@ -277,6 +356,7 @@ local function intercept(client)
   local function close(notebook)
     local state = assert(synced[notebook.uri], "notebook-lsp: closing a notebook the server doesn't have open")
     synced[notebook.uri] = nil
+    pushed[notebook.uri] = nil
     return rpc.notify("notebookDocument/didClose", {
       notebookDocument = { uri = notebook.notebook_uri },
       cellTextDocuments = vim.tbl_map(function(cell)
@@ -303,7 +383,7 @@ local function intercept(client)
       if failure then
         callback(failure, nil, id)
       else
-        callback(nil, merge(method, results, #targets_), id)
+        callback(nil, merge(method, results, targets_), id)
       end
     end
 
@@ -329,22 +409,33 @@ local function intercept(client)
     return true, id
   end
 
+  --- Sends a request about another document as it is. Its result may still be
+  --- about cells, like a rename's edits, which become the notebook's.
+  local function pass_through(method, params, callback, notify_reply)
+    return rpc.request(method, params, function(err, result, id)
+      if result ~= nil and next(notebooks) then
+        result = translate.to_client(result, nil, locate)
+      end
+      callback(err, result, id)
+    end, notify_reply)
+  end
+
   client.rpc = setmetatable({
     request = function(method, params, callback, notify_reply)
       -- An item of an earlier result resolves in the cell it came from
       if RESOLVE[method] and type(params) == "table" then
         local cell_uri, item = translate.untag(params)
         if not cell_uri then
-          return rpc.request(method, params, callback, notify_reply)
+          return pass_through(method, params, callback, notify_reply)
         end
         local where = locate(cell_uri)
         if not where then
           error("notebook-lsp: resolving an item of a cell that no longer exists: " .. cell_uri)
         end
-        return rpc.request(method, translate.shift(item, -where.cell.start), function(err, result, id)
+        return rpc.request(method, item, function(err, result, id)
           local resolved = result and translate.to_client(result, where, locate)
           if type(resolved) == "table" then
-            translate.tag(resolved, cell_uri, resolved.data)
+            translate.tag(resolved, cell_uri, result)
           end
           callback(err, resolved, id)
         end, notify_reply)
@@ -353,7 +444,12 @@ local function intercept(client)
       local document = type(params) == "table" and params.textDocument or nil
       local notebook = type(document) == "table" and notebooks[document.uri]
       if not notebook then
-        return rpc.request(method, params, callback, notify_reply)
+        return pass_through(method, params, callback, notify_reply)
+      end
+      if method == "textDocument/diagnostic" then
+        -- The notebook's previous report says nothing of the cells' reports
+        params = vim.deepcopy(params)
+        params.previousResultId = nil
       end
       local found = targets(notebook, params)
       if #found == 1 and (params.position or params.range) then
@@ -398,6 +494,8 @@ local function intercept(client)
       if method == "textDocument/didOpen" then
         return open(notebook)
       elseif method == "textDocument/didChange" then
+        -- Also when only lines outside cells changed: the cells may have moved
+        show_diagnostics(notebook)
         return change(notebook)
       elseif method == "textDocument/didSave" then
         return rpc.notify("notebookDocument/didSave", { notebookDocument = { uri = notebook.notebook_uri } })
@@ -408,6 +506,25 @@ local function intercept(client)
       return true
     end,
   }, { __index = rpc })
+
+  -- Notifications from the server: diagnostics of cells are shown where the
+  -- cells are. Like _server_request below, the dispatchers look it up on the client
+  ---@diagnostic disable-next-line: duplicate-set-field, invisible
+  function client._notification(self, method, params)
+    if method == "textDocument/publishDiagnostics" and type(params) == "table" then
+      local where = locate(params.uri)
+      if where == false then
+        return -- for a cell that's gone
+      elseif where and client:supports_method("textDocument/diagnostic", where.notebook.bufnr) then
+        return -- the server answers pull requests for the notebook, which give the same diagnostics
+      elseif where then
+        pushed[where.notebook.uri] = pushed[where.notebook.uri] or {}
+        pushed[where.notebook.uri][where.cell.id] = params.diagnostics
+        return show_diagnostics(where.notebook)
+      end
+    end
+    return notification(self, method, params)
+  end
 
   -- Requests from the server: edits to cells are edits to their notebook buffer.
   -- The client's dispatchers look this method up on the client when a request

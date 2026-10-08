@@ -145,28 +145,27 @@ end
 -- The key under which an item's `data` records the cell it came from
 local TAG = "notebook_lsp"
 
---- Records in `item`'s data the cell it came from, so that resolving it later
---- goes to that cell. `data` is the server's data for the item.
----@param item table
+--- Records in `item`'s data the cell it came from and the item as the server
+--- gave it: resolving the item later sends the server its own item, in its
+--- cell, with no translation back.
+---@param item table the item for Neovim
 ---@param cell_uri string
----@param data any
-function M.tag(item, cell_uri, data)
-  item.data = { [TAG] = cell_uri, data = data }
+---@param original table the item as the server gave it
+function M.tag(item, cell_uri, original)
+  item.data = { [TAG] = cell_uri, item = original }
 end
 
---- The cell `item` came from, if it records one, and the item as the server
---- gave it.
+--- The cell `item` came from and the item as the server gave it, if `item`
+--- records them.
 ---@param item table
 ---@return string? cell_uri
----@return table item
+---@return table? original
 function M.untag(item)
   local data = item.data
   if type(data) ~= "table" or type(data[TAG]) ~= "string" then
-    return nil, item
+    return nil, nil
   end
-  local original = vim.deepcopy(item)
-  original.data = data.data
-  return data[TAG], original
+  return data[TAG], data.item
 end
 
 return M
