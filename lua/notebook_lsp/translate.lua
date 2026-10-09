@@ -157,8 +157,10 @@ local function keep_fence(edits, cell, encoding)
   local out, spans = like(edits), {}
   for i, edit in ipairs(edits) do
     local range = { start = clamp(edit.range.start), ["end"] = clamp(edit.range["end"]) }
-    out[i] = vim.tbl_extend("force", edit, { range = range })
-    table.insert(spans, { from = offset(range.start), to = offset(range["end"]), text = edit.newText, index = i })
+    -- Neovim makes \r\n and \r line breaks before it applies an edit
+    local new_text = edit.newText:gsub("\r\n?", "\n")
+    out[i] = vim.tbl_extend("force", edit, { range = range, newText = new_text })
+    table.insert(spans, { from = offset(range.start), to = offset(range["end"]), text = new_text, index = i })
   end
   -- The text they leave: applied in the order of where they start, then in theirs
   table.sort(spans, function(a, b)

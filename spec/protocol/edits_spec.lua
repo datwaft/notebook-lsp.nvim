@@ -115,6 +115,24 @@ describe("edits from the server", function()
       assert.same({ "new = 0", "import sys", "x = 1", "```" }, vim.list_slice(lines, rows.cell1 + 1, rows.cell1 + 4))
       assert.equal("    return y", lines[rows.cell2 + 3])
     end)
+
+    -- Neovim makes \r\n and \r line breaks before it applies an edit
+    it("inserting a line ending with a carriage return, then changing the line after it", function()
+      local bufnr, uris = protocol.open_example(env)
+      local result = env.server:request("workspace/applyEdit", {
+        edit = {
+          documentChanges = {
+            { textDocument = { uri = uris[1], version = 1 }, edits = { edit(0, 0, 0, "new = 0\r") } },
+            { textDocument = { uri = uris[1], version = 1 }, edits = { edit(1, 7, 2, "sys") } },
+          },
+        },
+      })
+      assert.same({ applied = true }, result)
+      assert.same(
+        { "new = 0", "import sys", "x = 1", "```" },
+        vim.list_slice(protocol.lines(bufnr), rows.cell1 + 1, rows.cell1 + 4)
+      )
+    end)
   end)
 
   it("inserts at the end of a cell before its closing fence", function()
@@ -177,6 +195,11 @@ describe("edits from the server", function()
     -- Edits are applied together: it's what they leave that must end with a line break
     it("deleting the last line break and inserting at the end together", function()
       apply({ replace(1, 5, 2, 0, ""), edit(2, 0, 0, " + 2") }, { "import os", "x = 1 + 2" })
+    end)
+
+    -- Neovim makes it a line break before it applies the edit
+    it("inserting text ending with a carriage return", function()
+      apply({ edit(2, 0, 0, "y = 2\r") }, { "import os", "x = 1", "y = 2" })
     end)
   end)
 
