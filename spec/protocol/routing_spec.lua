@@ -264,6 +264,28 @@ describe("request routing", function()
     assert.same(expected, protocol.lines(bufnr))
   end)
 
+  -- Neovim's transport ends a cancelled request when the server acknowledges it, without an answer
+  it("ends a request to several cells once the server acknowledges its cancellation", function()
+    local bufnr = protocol.open_example(env)
+    local client = protocol.wait_attached(env, bufnr)
+    env.server.unanswered["textDocument/formatting"] = true
+    local answered = false
+    local sent, id = client:request("textDocument/formatting", {
+      textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+      options = { tabSize = 4, insertSpaces = true },
+    }, function()
+      answered = true
+    end, bufnr)
+    assert.is_true(sent)
+    assert.is_not_nil(client.requests[id])
+    client:cancel_request(assert(id))
+    assert.is_true(vim.wait(1000, function()
+      return client.requests[id] == nil
+    end, 5))
+    assert.equal(2, #env.server:received("$/cancelRequest"))
+    assert.is_false(answered)
+  end)
+
   it("combines the answers of a server that answers before returning", function()
     local bufnr = protocol.open_example(env)
     handlers["textDocument/formatting"] = function()

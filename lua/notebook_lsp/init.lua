@@ -683,18 +683,7 @@ local function intercept(client)
       return answer(merge(method, params, {}, targets_), callback, notify_reply)
     end
     last_request_id = last_request_id - 1
-    local id, results, pending, failure = last_request_id, {}, #targets_, nil
-    local function finish()
-      fanned_out[id] = nil
-      if notify_reply then
-        notify_reply(id)
-      end
-      if failure then
-        callback(failure, nil, id)
-      else
-        callback(nil, merge(method, params, results, targets_), id)
-      end
-    end
+    local id, results, answered, ended, failure = last_request_id, {}, 0, 0, nil
 
     -- Kept here too: a server may answer them all before the last returns, and the id be forgotten
     local requests = {}
@@ -703,9 +692,22 @@ local function intercept(client)
       local sent, request_id = rpc.request(method, target.params, function(err, result)
         failure = failure or err
         results[i] = result and to_client(method, result, target.where, context)
-        pending = pending - 1
-        if pending == 0 then
-          finish()
+        answered = answered + 1
+        if answered < #targets_ then
+          return
+        elseif failure then
+          callback(failure, nil, id)
+        else
+          callback(nil, merge(method, params, results, targets_), id)
+        end
+      end, function()
+        -- Each ends before its answer, or without one once cancelled
+        ended = ended + 1
+        if ended == #targets_ then
+          fanned_out[id] = nil
+          if notify_reply then
+            notify_reply(id)
+          end
         end
       end)
       if not sent then

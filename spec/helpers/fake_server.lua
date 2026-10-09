@@ -23,6 +23,7 @@ M.capabilities = {
 --- */resolve requests, which get their item back
 ---@field dispatchers vim.lsp.rpc.Dispatchers
 ---@field synchronous boolean? answers requests before returning from them, as in-process servers may
+---@field unanswered table<string, true> methods whose requests are never answered, only cancelled
 local FakeServer = {}
 FakeServer.__index = FakeServer
 
@@ -30,16 +31,21 @@ FakeServer.__index = FakeServer
 ---@return FakeServer
 function M.new(opts)
   opts = opts or {}
-  local server = setmetatable({ messages = {}, handlers = opts.handlers or {} }, FakeServer)
+  local server = setmetatable({ messages = {}, handlers = opts.handlers or {}, unanswered = {} }, FakeServer)
   local capabilities = opts.capabilities or M.capabilities
   server.cmd = function(dispatchers)
     server.dispatchers = dispatchers
     local closing, last_id = false, 0
+    local cancellable = {} ---@type table<integer, fun(id: integer)> the notify_reply of unanswered requests
     return {
       request = function(method, params, callback, notify_reply)
         table.insert(server.messages, { method = method, params = vim.deepcopy(params) })
         last_id = last_id + 1
         local id, result = last_id, nil
+        if server.unanswered[method] then
+          cancellable[id] = notify_reply or function() end
+          return true, id
+        end
         if method == "initialize" then
           result = { capabilities = capabilities }
         elseif server.handlers[method] then
@@ -63,6 +69,15 @@ function M.new(opts)
       end,
       notify = function(method, params)
         table.insert(server.messages, { method = method, params = vim.deepcopy(params) })
+        if method == "$/cancelRequest" and cancellable[params.id] then
+          -- Acknowledged with a RequestCancelled error, which Neovim's transport
+          -- takes as the end of the request, without calling back
+          local notify_reply = cancellable[params.id]
+          cancellable[params.id] = nil
+          vim.schedule(function()
+            notify_reply(params.id)
+          end)
+        end
         if method == "exit" then
           closing = true
           vim.schedule(function()
