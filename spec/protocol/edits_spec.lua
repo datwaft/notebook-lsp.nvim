@@ -134,6 +134,28 @@ describe("edits from the server", function()
       )
     end)
 
+    -- Neovim drops the line break that ends an edit's text when the edit ends past the end of its line
+    it("replacing to past the end of a line with a line break, then changing the next line", function()
+      local bufnr, uris = protocol.open_example(env)
+      local past_end = { range = { start = { line = 0, character = 7 }, ["end"] = { line = 0, character = 10 } } }
+      local result = env.server:request("workspace/applyEdit", {
+        edit = {
+          documentChanges = {
+            {
+              textDocument = { uri = uris[1], version = 1 },
+              edits = { vim.tbl_extend("force", past_end, { newText = "sys\n" }) },
+            },
+            { textDocument = { uri = uris[1], version = 1 }, edits = { edit(1, 0, 1, "value") } },
+          },
+        },
+      })
+      assert.same({ applied = true }, result)
+      assert.same(
+        { "import sys", "value = 1", "```" },
+        vim.list_slice(protocol.lines(bufnr), rows.cell1 + 1, rows.cell1 + 3)
+      )
+    end)
+
     -- Neovim asks before it applies a document's edits that need confirmation, and skips them if declined
     describe("with a change annotation that needs confirmation", function()
       local confirm = vim.fn.confirm

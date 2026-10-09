@@ -160,7 +160,17 @@ local function keep_fence(edits, cell, encoding)
     -- Neovim makes \r\n and \r line breaks before it applies an edit
     local new_text = edit.newText:gsub("\r\n?", "\n")
     out[i] = vim.tbl_extend("force", edit, { range = range, newText = new_text })
-    table.insert(spans, { from = offset(range.start), to = offset(range["end"]), text = new_text, index = i })
+    -- and, for one that ends past the end of its line, leaves out the line break
+    -- its text ends with, taking it for the line's own: so does what it leaves
+    local applied = new_text
+    local finish_line = range["end"].line < last and cell.lines[range["end"].line + 1]
+    if finish_line and vim.endswith(new_text, "\n") then
+      local column = vim.str_byteindex(finish_line, encoding, range["end"].character, false)
+      if column >= #finish_line and range["end"].character > column then
+        applied = new_text:sub(1, -2)
+      end
+    end
+    table.insert(spans, { from = offset(range.start), to = offset(range["end"]), text = applied, index = i })
   end
   -- The text they leave: applied in the order of where they start, then in theirs
   table.sort(spans, function(a, b)
