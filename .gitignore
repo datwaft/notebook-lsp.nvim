@@ -1,2 +1,4 @@
 /.lux/
 /.tests/
+# What Neovim logs where it can't write its own log, as in sandboxes
+/nvim.log
