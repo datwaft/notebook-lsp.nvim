@@ -125,6 +125,40 @@ local function is_text_edit(value)
   return type(value) == "table" and type(value.range) == "table" and type(value.newText) == "string"
 end
 
+-- A buffer of the plugin's own, where Neovim applies edits as it would to a
+-- notebook buffer, to see what they leave
+local scratch = nil ---@type integer?
+
+-- Any line after a cell's: its closing fence
+local FENCE = "```"
+
+--- The text of `cell` once `edits` are applied together, as Neovim applies
+--- them to its notebook buffer: in a buffer of their own, with the closing
+--- fence after the cell's lines.
+---@param edits (lsp.TextEdit|lsp.AnnotatedTextEdit)[] in the cell's lines, none past its end
+---@param cell notebook_lsp.Cell
+---@param encoding 'utf-8'|'utf-16'|'utf-32' the server's, which positions count characters in
+---@return string
+local function applied(edits, cell, encoding)
+  if not (scratch and vim.api.nvim_buf_is_valid(scratch)) then
+    scratch = vim.api.nvim_create_buf(false, true)
+    vim.bo[scratch].undolevels = -1
+  end
+  vim.api.nvim_buf_set_lines(scratch, 0, -1, true, vim.list_extend(vim.deepcopy(cell.lines), { FENCE }))
+  -- Neovim changes the edits it applies, and asks before it applies annotated ones
+  local copies = vim.tbl_map(function(edit)
+    local copy = vim.deepcopy(edit)
+    copy.annotationId = nil
+    return copy
+  end, edits)
+  vim.lsp.util.apply_text_edits(copies, scratch, encoding)
+  local lines = vim.api.nvim_buf_get_lines(scratch, 0, -1, true)
+  -- The fence, after what the edits left on its line if they took the line break before it
+  local last = table.remove(lines)
+  local text = #lines > 0 and table.concat(lines, "\n") .. "\n" or ""
+  return text .. last:sub(1, #last - #FENCE)
+end
+
 --- `edits`, TextEdits of `cell` applied together, such that the cell's text
 --- still ends with a line break once they're applied: in the notebook buffer,
 --- the closing fence comes right after it, and must stay on a line of its own.
@@ -135,60 +169,26 @@ end
 ---@param cell notebook_lsp.Cell
 ---@param encoding 'utf-8'|'utf-16'|'utf-32' the server's, which positions count characters in
 ---@return lsp.TextEdit[]
----@return string text the cell's text once they're applied
 local function keep_fence(edits, cell, encoding)
   local last = #cell.lines -- the line after the cell's last line break: the fence's
   local finish = { line = last, character = 0 }
   local function clamp(position)
     return position.line < last and position or finish
   end
-  --- The byte of the cell's text where `position`, clamped, is.
-  local function offset(position)
-    local bytes = 0
-    for i = 1, position.line do
-      bytes = bytes + #cell.lines[i] + 1
-    end
-    if position.line < last then
-      bytes = bytes + vim.str_byteindex(cell.lines[position.line + 1], encoding, position.character, false)
-    end
-    return bytes
-  end
-
-  local out, spans = like(edits), {}
+  local out, reach_end = like(edits), false
   for i, edit in ipairs(edits) do
     local range = { start = clamp(edit.range.start), ["end"] = clamp(edit.range["end"]) }
-    -- Neovim makes \r\n and \r line breaks before it applies an edit
-    local new_text = edit.newText:gsub("\r\n?", "\n")
-    out[i] = vim.tbl_extend("force", edit, { range = range, newText = new_text })
-    -- and, for one that ends past the end of its line, leaves out the line break
-    -- its text ends with, taking it for the line's own: so does what it leaves
-    local applied = new_text
-    local finish_line = range["end"].line < last and cell.lines[range["end"].line + 1]
-    if finish_line and vim.endswith(new_text, "\n") then
-      local column = vim.str_byteindex(finish_line, encoding, range["end"].character, false)
-      if column >= #finish_line and range["end"].character > column then
-        applied = new_text:sub(1, -2)
-      end
+    out[i] = vim.tbl_extend("force", edit, { range = range })
+    reach_end = reach_end or range["end"].line == last
+  end
+  -- Only those that end at the cell's end can take its last line break
+  if reach_end then
+    local text = applied(out, cell, encoding)
+    if text ~= "" and not vim.endswith(text, "\n") then
+      table.insert(out, { range = { start = finish, ["end"] = finish }, newText = "\n" })
     end
-    table.insert(spans, { from = offset(range.start), to = offset(range["end"]), text = applied, index = i })
   end
-  -- The text they leave: applied in the order of where they start, then in theirs
-  table.sort(spans, function(a, b)
-    return a.from < b.from or (a.from == b.from and a.index < b.index)
-  end)
-  local text, done = {}, 0
-  for _, span in ipairs(spans) do
-    table.insert(text, cell.text:sub(done + 1, span.from))
-    table.insert(text, span.text)
-    done = math.max(done, span.to)
-  end
-  table.insert(text, cell.text:sub(done + 1))
-  local result = table.concat(text)
-  if result ~= "" and not vim.endswith(result, "\n") then
-    table.insert(out, { range = { start = finish, ["end"] = finish }, newText = "\n" })
-    result = result .. "\n"
-  end
-  return out, result
+  return out
 end
 
 --- The lines of a cell's `text`, which ends with a line break unless it's empty.
@@ -209,7 +209,7 @@ local function in_sequence(batches, cell, encoding)
   -- Neovim asks before it applies edits whose annotation needs confirmation:
   -- the batch has the batches' annotation, which must be the same for all
   local annotation = nil ---@type string?
-  local text = cell.text
+  local current = cell
   for _, batch in ipairs(batches) do
     for _, edit in ipairs(batch) do
       local id = edit.annotationId
@@ -219,12 +219,12 @@ local function in_sequence(batches, cell, encoding)
       )
       annotation = annotation or id
     end
-    local current = { id = cell.id, start = cell.start, lines = lines_of(text), text = text }
-    text = select(2, keep_fence(batch, current, encoding))
+    local text = applied(keep_fence(batch, current, encoding), current, encoding)
+    current = { id = cell.id, start = cell.start, lines = lines_of(text), text = text }
   end
-  local lines, edits = lines_of(text), {}
+  local lines, edits = current.lines, {}
   for _, hunk in
-    ipairs(vim.text.diff(cell.text, text, { result_type = "indices" }) --[[@as integer[][] ]])
+    ipairs(vim.text.diff(cell.text, current.text, { result_type = "indices" }) --[[@as integer[][] ]])
   do
     local old_start, old_count, new_start, new_count = unpack(hunk)
     -- Lines are 1-based, and a hunk that removes none adds its lines after old_start

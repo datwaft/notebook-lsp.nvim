@@ -156,6 +156,24 @@ describe("edits from the server", function()
       )
     end)
 
+    -- Neovim applies a batch's edits from the last to the first, each to the lines the ones after it left
+    it("inserting past the end of a line and at its end, then changing another line", function()
+      local bufnr, uris = protocol.open_example(env)
+      local result = env.server:request("workspace/applyEdit", {
+        edit = {
+          documentChanges = {
+            { textDocument = { uri = uris[1], version = 1 }, edits = { edit(1, 6, 0, "A"), edit(1, 5, 0, "B") } },
+            { textDocument = { uri = uris[1], version = 1 }, edits = { edit(0, 0, 0, "# ") } },
+          },
+        },
+      })
+      assert.same({ applied = true }, result)
+      assert.same(
+        { "# import os", "x = 1BA", "```" },
+        vim.list_slice(protocol.lines(bufnr), rows.cell1 + 1, rows.cell1 + 3)
+      )
+    end)
+
     -- Neovim asks before it applies a document's edits that need confirmation, and skips them if declined
     describe("with a change annotation that needs confirmation", function()
       local confirm = vim.fn.confirm
