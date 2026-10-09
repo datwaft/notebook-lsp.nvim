@@ -234,7 +234,9 @@ local function targets(notebook, params)
     local diagnostics = vim.tbl_get(params, "context", "diagnostics")
     if type(diagnostics) == "table" then
       -- A code action request for a cell is about the cell's own diagnostics
-      cell_params.context.diagnostics = translate.cell_diagnostics(diagnostics, where)
+      cell_params.context.diagnostics = translate.cell_diagnostics(diagnostics, where, function(uri)
+        return notebooks[uri]
+      end)
     end
     return { where = where, params = cell_params }
   end

@@ -57,13 +57,14 @@ end
 
 --- The diagnostics among `diagnostics`, Neovim's of a notebook buffer (as in
 --- a code action request), that are in `where`'s cell, for the server: in the
---- cell's lines, with their related locations in cells in those cells' lines.
---- Related locations in the notebook but in no cell are left out.
+--- cell's lines, with their related locations in cells (of any notebook) in
+--- those cells' lines. Related locations in a notebook but in no cell are left out.
 ---@param diagnostics lsp.Diagnostic[]
 ---@param where notebook_lsp.Where
+---@param notebook_of fun(uri: string): notebook_lsp.Notebook? the notebook of the buffer with `uri`, if any
 ---@return lsp.Diagnostic[]
-function M.cell_diagnostics(diagnostics, where)
-  local notebook, cell = where.notebook, where.cell
+function M.cell_diagnostics(diagnostics, where, notebook_of)
+  local cell = where.cell
   local out = like(diagnostics)
   for _, diagnostic in ipairs(diagnostics) do
     local line = diagnostic.range.start.line
@@ -73,7 +74,8 @@ function M.cell_diagnostics(diagnostics, where)
         moved.relatedInformation = like(diagnostic.relatedInformation)
         for _, related in ipairs(diagnostic.relatedInformation) do
           local location = related.location
-          if location.uri ~= notebook.uri then
+          local notebook = notebook_of(location.uri)
+          if not notebook then
             table.insert(moved.relatedInformation, related)
           else
             local other = notebook:cell_at(location.range.start.line)

@@ -449,6 +449,25 @@ describe("request routing", function()
     assert.same({ published }, env.server:wait_for("textDocument/codeAction").context.diagnostics)
   end)
 
+  it("gives the server its diagnostics back with related locations in another notebook", function()
+    local bufnr, cells = protocol.open_example(env)
+    protocol.wait_attached(env, protocol.open(env, "other.md", protocol.notebook(protocol.example.body)))
+    local other = env.server:wait_for("notebookDocument/didOpen", 2).cellTextDocuments
+    local published = {
+      range = range(1, 11, 1),
+      message = "x is redefined",
+      relatedInformation = { { location = { uri = other[2].uri, range = range(1, 0, 1) }, message = "elsewhere" } },
+    }
+    env.server:notify("textDocument/publishDiagnostics", { uri = cells[2], diagnostics = { published } })
+    local shown = vim.diagnostic.get(bufnr)[1].user_data.lsp
+    vim.cmd.buffer(bufnr)
+    request(bufnr, "textDocument/codeAction", nil, {
+      range = range(rows.cell2 + 1, 11, 1),
+      context = { diagnostics = { shown } },
+    })
+    assert.same({ published }, env.server:wait_for("textDocument/codeAction").context.diagnostics)
+  end)
+
   -- Arguments are the server's, as data is: Neovim sends them back as they are.
   it("leaves the arguments of commands untouched", function()
     local bufnr, cells = protocol.open_example(env)
