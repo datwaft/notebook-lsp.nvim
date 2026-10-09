@@ -108,6 +108,9 @@ servers that are already attached.
   registrations without looking at their `notebook` filter.
 - Changing the kernel's language in an open notebook doesn't change what
   servers have of it: reopen it with `:edit` after.
+- Servers that sync notebooks but not text documents (no `openClose`, or no
+  `change`) don't attach to notebooks: the plugin tells servers about a
+  notebook as Neovim tells them about its buffer.
 - Related reports about cells in pulled diagnostics (`relatedDocuments`) are
   ignored: a notebook's diagnostics are updated when the notebook itself is
   pulled. ty, ruff and basedpyright don't send related reports.

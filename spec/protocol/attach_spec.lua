@@ -155,6 +155,42 @@ describe("attaching", function()
     assert.is_false(opened_as_text(markdown))
   end)
 
+  -- The plugin tells servers about a notebook as Neovim tells them about its buffer
+  describe("detaches from servers that sync notebooks, but not text documents", function()
+    --- Starts a server whose text document sync is `sync`, opens the example
+    --- notebook and asks for a hover in it as soon as the server attaches.
+    local function open(sync)
+      local capabilities = vim.deepcopy(fake_server.capabilities)
+      capabilities.textDocumentSync = sync
+      env = protocol.start({ capabilities = capabilities })
+      local detached = watch_detaching()
+      vim.api.nvim_create_autocmd("LspAttach", {
+        once = true,
+        callback = function(event)
+          local client = assert(vim.lsp.get_client_by_id(event.data.client_id))
+          client:request("textDocument/hover", {
+            textDocument = { uri = vim.uri_from_bufnr(event.buf) },
+            position = { line = protocol.example.rows.cell1, character = 0 },
+          }, function() end, event.buf)
+        end,
+      })
+      local markdown = protocol.open(env, "notebook.md", protocol.notebook(protocol.example.body))
+      assert.is_true(vim.wait(1000, detached, 5))
+      assert.same({}, vim.lsp.get_clients({ bufnr = markdown }))
+      assert.same({}, env.server:received("notebookDocument/didOpen"))
+      -- Not asked about cells it doesn't have, before it's detached
+      assert.same({}, env.server:received("textDocument/hover"))
+    end
+
+    it("without opening and closing them", function()
+      open({ openClose = false, change = 2 })
+    end)
+
+    it("without their changes", function()
+      open({ openClose = true, change = 0 })
+    end)
+  end)
+
   describe("to a server whose notebook selector", function()
     --- Starts a server whose only notebook selector is `selector`, opens the
     --- example notebook and returns what the server opened, if anything.

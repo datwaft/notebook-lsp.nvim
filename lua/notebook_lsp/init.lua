@@ -79,6 +79,17 @@ local function syncs_notebooks(client, notebook)
   return false
 end
 
+--- Whether Neovim tells the server about the buffers it attaches to, as it
+--- opens, changes and closes them: what the plugin tells it about notebooks
+--- follows that.
+---@param client vim.lsp.Client
+local function syncs_text(client)
+  local change = vim.tbl_get(client.server_capabilities, "textDocumentSync", "change")
+  return client:supports_method("textDocument/didOpen")
+    and change ~= nil
+    and change ~= vim.lsp.protocol.TextDocumentSyncKind.None
+end
+
 --- The cell `uri` names, among the notebooks' cells.
 ---@type notebook_lsp.Locate
 local function locate(uri)
@@ -411,6 +422,32 @@ local function intercept(client)
   ---@diagnostic disable-next-line: invisible
   local notification = client._notification
 
+  --- Detaches the server from the notebook, which it isn't told about.
+  ---@param notebook notebook_lsp.Notebook
+  local function reject(notebook)
+    rejected[notebook.uri] = true
+    vim.schedule(function()
+      vim.lsp.buf_detach_client(notebook.bufnr, client.id)
+    end)
+  end
+
+  -- Neovim doesn't open buffers for servers that don't sync text documents,
+  -- and the notebook isn't opened for them either: it's rejected once attached
+  vim.api.nvim_create_autocmd("LspAttach", {
+    group = vim.api.nvim_create_augroup(("notebook_lsp.attach.%d"):format(client.id), {}),
+    desc = "notebook-lsp: detach from notebooks the server wasn't told about",
+    callback = function(event)
+      if client:is_stopped() then
+        return true
+      end
+      local uri = vim.uri_from_bufnr(event.buf)
+      local notebook = notebooks[uri]
+      if event.data.client_id == client.id and notebook and not synced[uri] and not rejected[uri] then
+        reject(notebook)
+      end
+    end,
+  })
+
   ---@type notebook_lsp.Context
   local context = {
     locate = locate,
@@ -693,11 +730,12 @@ local function intercept(client)
         -- Cells are saved with their notebook, which the protocol has no "will save" for
         return answer(nil, callback, notify_reply)
       end
+      if not synced[notebook.uri] then
+        return answer(nil, callback, notify_reply) -- nothing to ask about cells the server doesn't have
+      end
       -- The request is about the cells as they are now, which the server must
       -- know first. Neovim flushes its pending changes, but not for buffer 0
-      if synced[notebook.uri] then
-        change(notebook)
-      end
+      change(notebook)
       if method == "textDocument/diagnostic" then
         -- The notebook's previous report says nothing of the cells' reports
         params = vim.deepcopy(params)
@@ -737,11 +775,8 @@ local function intercept(client)
 
       -- Neovim opens an attached buffer once the server is initialized, which
       -- is when the server tells whether it syncs notebooks
-      if method == "textDocument/didOpen" and not syncs_notebooks(client, notebook) then
-        rejected[uri] = true
-        vim.schedule(function()
-          vim.lsp.buf_detach_client(notebook.bufnr, client.id)
-        end)
+      if method == "textDocument/didOpen" and not (syncs_notebooks(client, notebook) and syncs_text(client)) then
+        reject(notebook)
       end
       if rejected[uri] then
         if method == "textDocument/didClose" then
