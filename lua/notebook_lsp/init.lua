@@ -20,6 +20,11 @@ local CODE = 2
 -- The notebook type of Jupyter notebooks, as servers name it
 local NOTEBOOK_TYPE = "jupyter-notebook"
 
+-- How many requests about cells a server has at a time, at most: a request
+-- about every cell would otherwise send it dozens at once, which a server may
+-- not handle (ty 0.0.84 stops answering if 41 arrive as it starts)
+local MAX_REQUESTS = 16
+
 --- Notebook buffers, by the URI Neovim sends their messages with.
 ---@type table<string, notebook_lsp.Notebook>
 local notebooks = {}
@@ -658,8 +663,57 @@ local function intercept(client)
     })
   end
 
-  -- The requests to the server behind each of the plugin's own request ids
-  local fanned_out = {} ---@type table<integer, integer[]>
+  ---@class (private) notebook_lsp.CellRequest a request about a cell, sent when the server has room for it
+  ---@field method string
+  ---@field params table
+  ---@field callback fun(err: lsp.ResponseError?, result: any)
+  ---@field ended fun() called once the request ends: answered, cancelled, or never sent
+  ---@field state "waiting"|"sent"|"ended"
+  ---@field id? integer the server's request id, once sent
+
+  -- The requests about cells behind each of the plugin's own request ids
+  local fanned_out = {} ---@type table<integer, notebook_lsp.CellRequest[]>
+  -- The requests about cells the server has, and those waiting for room
+  local active, waiting = 0, {} ---@type integer, notebook_lsp.CellRequest[]
+
+  --- Sends the waiting requests about cells the server has room for, in order.
+  local function send_waiting()
+    while active < MAX_REQUESTS and #waiting > 0 do
+      local cell_request = table.remove(waiting, 1)
+      cell_request.state = "sent"
+      active = active + 1
+      local sent, id = rpc.request(cell_request.method, cell_request.params, cell_request.callback, function()
+        active = active - 1
+        cell_request.state = "ended"
+        cell_request.ended()
+        send_waiting()
+      end)
+      if not sent then -- the transport is closing
+        active = active - 1
+        cell_request.state = "ended"
+        cell_request.ended()
+      elseif cell_request.state == "sent" then
+        cell_request.id = id
+      end
+    end
+  end
+
+  --- Cancels a request about a cell: the server's, or one still waiting, which is never sent.
+  ---@param cell_request notebook_lsp.CellRequest
+  local function cancel(cell_request)
+    if cell_request.state == "waiting" then
+      cell_request.state = "ended"
+      for i, other in ipairs(waiting) do
+        if other == cell_request then
+          table.remove(waiting, i)
+          break
+        end
+      end
+      cell_request.ended()
+    elseif cell_request.state == "sent" and cell_request.id then
+      rpc.notify("$/cancelRequest", { id = cell_request.id })
+    end
+  end
 
   --- Answers `callback` with `result` without asking the server, under a
   --- request id of the plugin's own.
@@ -675,48 +729,55 @@ local function intercept(client)
     return true, id
   end
 
-  --- Sends `method` to `targets`, and answers `callback` with their results
-  --- combined, under a request id of the plugin's own.
+  --- Sends `method` to `targets` as the server has room, and answers
+  --- `callback` with their results combined, under a request id of the plugin's own.
   ---@param method string
   ---@param params table the request for the notebook
   ---@param targets_ notebook_lsp.Target[]
   local function fan_out(method, params, targets_, callback, notify_reply)
     if #targets_ == 0 then
       return answer(merge(method, params, {}, targets_), callback, notify_reply)
+    elseif rpc.is_closing() then
+      return false
     end
     last_request_id = last_request_id - 1
     local id, results, answered, ended, failure = last_request_id, {}, 0, 0, nil
+    -- About one position or range in one cell, like a hover: the cell's answer is the notebook's
+    local one = #targets_ == 1 and (params.position or params.range)
 
-    -- Kept here too: a server may answer them all before the last returns, and the id be forgotten
     local requests = {}
     fanned_out[id] = requests
     for i, target in ipairs(targets_) do
-      local sent, request_id = rpc.request(method, target.params, function(err, result)
-        failure = failure or err
-        results[i] = result and to_client(method, result, target.where, context)
-        answered = answered + 1
-        if answered < #targets_ then
-          return
-        elseif failure then
-          callback(failure, nil, id)
-        else
-          callback(nil, merge(method, params, results, targets_), id)
-        end
-      end, function()
-        -- Each ends before its answer, or without one once cancelled
-        ended = ended + 1
-        if ended == #targets_ then
-          fanned_out[id] = nil
-          if notify_reply then
-            notify_reply(id)
+      table.insert(requests, {
+        method = method,
+        params = target.params,
+        state = "waiting",
+        callback = function(err, result)
+          failure = failure or err
+          results[i] = result and to_client(method, result, target.where, context)
+          answered = answered + 1
+          if answered < #targets_ then
+            return
+          elseif failure then
+            callback(failure, nil, id)
+          else
+            callback(nil, one and results[1] or merge(method, params, results, targets_), id)
           end
-        end
-      end)
-      if not sent then
-        return false
-      end
-      table.insert(requests, request_id)
+        end,
+        -- Each ends before its answer, or without one once cancelled
+        ended = function()
+          ended = ended + 1
+          if ended == #targets_ then
+            fanned_out[id] = nil
+            if notify_reply then
+              notify_reply(id)
+            end
+          end
+        end,
+      })
     end
+    vim.list_extend(waiting, requests)
+    send_waiting()
     return true, id
   end
 
@@ -798,20 +859,13 @@ local function intercept(client)
         params = vim.deepcopy(params)
         params.previousResultId = nil
       end
-      local found = targets(notebook, params)
-      if #found == 1 and (params.position or params.range) then
-        local target = found[1]
-        return rpc.request(method, target.params, function(err, result, id)
-          callback(err, result and to_client(method, result, target.where, context), id)
-        end, notify_reply)
-      end
-      return fan_out(method, params, found, callback, notify_reply)
+      return fan_out(method, params, targets(notebook, params), callback, notify_reply)
     end,
 
     notify = function(method, params)
       if method == "$/cancelRequest" and type(params.id) == "number" and params.id < 0 then
-        for _, id in ipairs(fanned_out[params.id] or {}) do
-          rpc.notify(method, { id = id })
+        for _, cell_request in ipairs(fanned_out[params.id] or {}) do
+          cancel(cell_request)
         end
         return true
       end

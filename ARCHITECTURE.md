@@ -218,10 +218,14 @@ sequenceDiagram
   P-->>N: symbols in the buffer's lines
 ```
 
-A request about one position or range, in one cell, keeps Neovim's request
-id. Any other request may go to several cells, so Neovim gets a request id of
-the plugin's own. It is negative, so it never clashes with Neovim's.
-Cancelling it cancels each cell's request.
+The cells' requests go to the server in order, at most 16 at a time: the next
+one goes when an earlier one is answered. A request about every cell would
+otherwise send dozens at once, which a server may not handle. For example,
+ty 0.0.84 stops answering if 41 requests arrive as it starts.
+
+Neovim gets a request id of the plugin's own, which is negative, so it never
+clashes with Neovim's. Cancelling it cancels the cells' requests the server
+has, and drops those still waiting.
 
 `merge()` combines the cells' answers. It concatenates lists, and has its own
 cases for answers that aren't lists:
@@ -322,7 +326,7 @@ from LSP 3.17.
 | `notebookDocument/didSave` | Sent when the buffer is written, if `notebookDocumentSync.save` asks for it |
 | `notebookDocument/didClose` | Closes the notebook and every cell document |
 | Requests about the notebook | Each names a cell document. Positions are in the cell's lines, with the encoding the client and server agreed on. |
-| `$/cancelRequest` | Cancelling a request sent to several cells cancels each cell's |
+| `$/cancelRequest` | Cancelling a request about the notebook cancels each cell's request the server has |
 
 ### What it accepts from the server
 

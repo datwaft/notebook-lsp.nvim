@@ -336,6 +336,96 @@ describe("request routing", function()
     assert.is_false(answered)
   end)
 
+  describe("in a notebook of many cells", function()
+    -- A request about every cell would send dozens at once, which a server may
+    -- not handle: ty 0.0.84 stops answering at all if 41 arrive as it starts
+    local LIMIT = 16
+
+    --- Opens a notebook of `count` one-line cells, and returns its buffer and client.
+    local function open_cells(count)
+      local body = {}
+      for i = 1, count do
+        vim.list_extend(body, { "", "```python", ("x%d = %d"):format(i, i), "```" })
+      end
+      local bufnr = protocol.open(env, "many.md", protocol.notebook(body))
+      local client = protocol.wait_attached(env, bufnr)
+      env.server:wait_for("notebookDocument/didOpen")
+      return bufnr, client
+    end
+
+    local function format(client, bufnr, callback)
+      return client:request("textDocument/formatting", {
+        textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+        options = { tabSize = 4, insertSpaces = true },
+      }, callback or function() end, bufnr)
+    end
+
+    it("sends the server only so many requests at a time, and the others as they're answered", function()
+      local bufnr, client = open_cells(40)
+      handlers["textDocument/formatting"] = function()
+        return { { range = range(0, 0, 0), newText = "# formatted\n" } }
+      end
+      env.server.held["textDocument/formatting"] = true
+      local result
+      format(client, bufnr, function(_, edits)
+        result = edits
+      end)
+      vim.wait(100)
+      assert.equal(LIMIT, #env.server:received("textDocument/formatting"))
+
+      env.server:release("textDocument/formatting")
+      assert.is_true(vim.wait(1000, function()
+        return result ~= nil
+      end, 5))
+      assert.equal(40, #env.server:received("textDocument/formatting"))
+      assert.equal(40, #result)
+    end)
+
+    it("sends a request about one cell once the server has room for it", function()
+      local bufnr, client = open_cells(40)
+      env.server.held["textDocument/formatting"] = true
+      format(client, bufnr)
+      local hovered = false
+      client:request("textDocument/hover", {
+        textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+        position = { line = #protocol.header + 2, character = 0 },
+      }, function()
+        hovered = true
+      end, bufnr)
+      vim.wait(100)
+      assert.same({}, env.server:received("textDocument/hover"))
+
+      env.server:release("textDocument/formatting")
+      assert.is_true(vim.wait(1000, function()
+        return hovered
+      end, 5))
+    end)
+
+    -- Cancelling a request cancels what the server has of it, and drops the rest
+    it("doesn't send the requests of a cancelled request that were still waiting", function()
+      local bufnr, client = open_cells(40)
+      env.server.unanswered["textDocument/formatting"] = true
+      local _, id = format(client, bufnr)
+      vim.wait(100)
+      client:cancel_request(assert(id))
+      assert.is_true(vim.wait(1000, function()
+        return client.requests[id] == nil
+      end, 5))
+      assert.equal(LIMIT, #env.server:received("$/cancelRequest"))
+      assert.equal(LIMIT, #env.server:received("textDocument/formatting"))
+
+      -- Their room is the next request's
+      env.server.unanswered["textDocument/formatting"] = nil
+      local answered = false
+      format(client, bufnr, function()
+        answered = true
+      end)
+      assert.is_true(vim.wait(1000, function()
+        return answered
+      end, 5))
+    end)
+  end)
+
   it("combines the answers of a server that answers before returning", function()
     local bufnr = protocol.open_example(env)
     handlers["textDocument/formatting"] = function()

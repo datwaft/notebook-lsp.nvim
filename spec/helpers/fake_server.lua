@@ -24,6 +24,8 @@ M.capabilities = {
 ---@field dispatchers vim.lsp.rpc.Dispatchers
 ---@field synchronous boolean? answers requests before returning from them, as in-process servers may
 ---@field unanswered table<string, true> methods whose requests are never answered, only cancelled
+---@field held table<string, true> methods whose requests are answered only once released (see release)
+---@field waiting table<string, fun()[]> the replies to the held requests of each method, until released
 local FakeServer = {}
 FakeServer.__index = FakeServer
 
@@ -31,7 +33,10 @@ FakeServer.__index = FakeServer
 ---@return FakeServer
 function M.new(opts)
   opts = opts or {}
-  local server = setmetatable({ messages = {}, handlers = opts.handlers or {}, unanswered = {} }, FakeServer)
+  local server = setmetatable(
+    { messages = {}, handlers = opts.handlers or {}, unanswered = {}, held = {}, waiting = {} },
+    FakeServer
+  )
   local capabilities = opts.capabilities or M.capabilities
   server.cmd = function(dispatchers)
     server.dispatchers = dispatchers
@@ -60,7 +65,10 @@ function M.new(opts)
           end
           callback(nil, result, id)
         end
-        if server.synchronous then
+        if server.held[method] then
+          server.waiting[method] = server.waiting[method] or {}
+          table.insert(server.waiting[method], reply)
+        elseif server.synchronous then
           reply()
         else
           vim.schedule(reply)
@@ -95,6 +103,17 @@ function M.new(opts)
     }
   end
   return server
+end
+
+--- Answers the held requests of `method`, and those that come after it.
+---@param method string
+function FakeServer:release(method)
+  self.held[method] = nil
+  local waiting = self.waiting[method] or {}
+  self.waiting[method] = nil
+  for _, reply in ipairs(waiting) do
+    vim.schedule(reply)
+  end
 end
 
 --- Params of every received message with `method`, in order.
