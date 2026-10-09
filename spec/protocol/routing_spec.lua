@@ -153,8 +153,8 @@ describe("request routing", function()
   end)
 
   -- The server gets an item back as from a .py file: with the list's defaults, as Neovim applies them
-  describe("resolves completion items with the list's default data", function()
-    --- The data the server gets back for each item of `list`, by label, when
+  describe("resolves completion items with the list's defaults", function()
+    --- What the server gets back for each item of `list`, by label, when
     --- Neovim's completion resolves it from `bufnr` at `position`.
     local function resolved(list, bufnr, position)
       handlers["textDocument/completion"] = function()
@@ -162,38 +162,68 @@ describe("request routing", function()
       end
       local client = protocol.wait_attached(env, bufnr)
       local result = request(bufnr, "textDocument/completion", position)
-      local data = {}
+      local items = {}
       for _, candidate in ipairs(vim.lsp.completion._lsp_to_complete_items(result, "", client.id)) do
         local item = candidate.user_data.nvim.lsp.completion_item
         local count = #env.server:received("completionItem/resolve")
         assert(client:request_sync("completionItem/resolve", item, 1000, bufnr))
-        data[item.label] = env.server:wait_for("completionItem/resolve", count + 1).data
+        items[item.label] = env.server:wait_for("completionItem/resolve", count + 1)
       end
-      return data
+      return items
     end
 
     --- What the server gets back from a notebook, and from a .py file, for a
-    --- list whose default data applies to its items as `apply_kind` says.
-    local function from_both(apply_kind)
-      local list = {
-        itemDefaults = { data = { shared = 42 } },
-        applyKind = apply_kind,
-        items = { { label = "a" }, { label = "b", data = { specific = 7 } } },
-      }
+    --- list of `items` with `defaults`, which apply to them as `apply_kind` says.
+    local function from_both(defaults, apply_kind, items)
+      local list = { itemDefaults = defaults, applyKind = apply_kind, items = items }
       local bufnr = protocol.open_example(env)
       local notebook = resolved(list, bufnr, protocol.position(bufnr, rows.cell2 + 1, "x"))
       return notebook, resolved(list, protocol.open(env, "utils.py", { "x = 1" }), { line = 0, character = 0 })
     end
 
-    it("replacing the items' own", function()
-      local notebook, py = from_both(nil)
-      assert.same({ a = { shared = 42 }, b = { specific = 7 } }, notebook)
+    local items = { { label = "a" }, { label = "b", data = { specific = 7 } } }
+
+    it("with default data replacing the items' own", function()
+      local notebook, py = from_both({ data = { shared = 42 } }, nil, items)
+      assert.same({ shared = 42 }, notebook.a.data)
+      assert.same({ specific = 7 }, notebook.b.data)
       assert.same(py, notebook)
     end)
 
-    it("merged into the items' own", function()
-      local notebook, py = from_both({ data = vim.lsp.protocol.ApplyKind.Merge })
-      assert.same({ a = { shared = 42 }, b = { shared = 42, specific = 7 } }, notebook)
+    it("with default data merged into the items' own", function()
+      local merge = vim.lsp.protocol.ApplyKind.Merge
+      local notebook, py = from_both({ data = { shared = 42 } }, { data = merge }, items)
+      assert.same({ shared = 42 }, notebook.a.data)
+      assert.same({ shared = 42, specific = 7 }, notebook.b.data)
+      assert.same(py, notebook)
+    end)
+
+    it("with every default", function()
+      local defaults = {
+        editRange = range(1, 11, 1),
+        insertTextFormat = 2,
+        insertTextMode = 1,
+        commitCharacters = { "(" },
+        data = { shared = 42 },
+      }
+      local notebook, py = from_both(defaults, nil, {
+        { label = "a" },
+        { label = "b", insertText = "bee", insertTextFormat = 1, commitCharacters = { "." } },
+      })
+      assert.same({ range = range(1, 11, 1), newText = "a" }, notebook.a.textEdit)
+      assert.same({ "(" }, notebook.a.commitCharacters)
+      assert.same(py, notebook)
+    end)
+
+    it("with an insert and a replace range, and commit characters merged", function()
+      local defaults =
+        { editRange = { insert = range(1, 11, 0), replace = range(1, 11, 1) }, commitCharacters = { "(" } }
+      local merge = vim.lsp.protocol.ApplyKind.Merge
+      local notebook, py = from_both(defaults, { commitCharacters = merge }, {
+        { label = "a", commitCharacters = { "." } },
+      })
+      assert.same({ insert = range(1, 11, 0), replace = range(1, 11, 1), newText = "a" }, notebook.a.textEdit)
+      assert.same({ ".", "(" }, notebook.a.commitCharacters)
       assert.same(py, notebook)
     end)
   end)

@@ -179,6 +179,49 @@ local function tag_hierarchy(method, result)
   return result
 end
 
+--- `item`, of the CompletionList `list`, with the list's defaults as Neovim
+--- applies them to the items it shows, and sends back to resolve them: Neovim's
+--- own apply_defaults(), which isn't public.
+---@param item lsp.CompletionItem
+---@param list lsp.CompletionList
+---@return lsp.CompletionItem
+local function with_defaults(item, list)
+  local defaults = list.itemDefaults
+  if not defaults then
+    return item
+  end
+  item = vim.deepcopy(item)
+  local apply_kind = list.applyKind or {} -- unset means Replace for every field
+  local MERGE = vim.lsp.protocol.ApplyKind.Merge
+
+  local merge = apply_kind.commitCharacters == MERGE and defaults.commitCharacters
+  item.commitCharacters = merge and vim.list_extend(item.commitCharacters or {}, merge)
+    or (item.commitCharacters or defaults.commitCharacters)
+  item.insertTextFormat = item.insertTextFormat or defaults.insertTextFormat
+  item.insertTextMode = item.insertTextMode or defaults.insertTextMode
+  item.data = apply_kind.data == MERGE
+      and type(defaults.data) == "table"
+      and type(item.data) == "table"
+      and vim.tbl_extend("force", defaults.data --[[@as table]], item.data --[[@as table]])
+    or vim.nonnil(item.data, defaults.data)
+
+  if defaults.editRange then
+    local text_edit = item.textEdit or {}
+    item.textEdit = text_edit
+    text_edit.newText = text_edit.newText
+      or item.textEditText
+      or (item.insertText ~= "" and item.insertText or nil)
+      or item.label
+    if defaults.editRange.start then
+      text_edit.range = text_edit.range or defaults.editRange
+    elseif defaults.editRange.insert then
+      text_edit.insert = defaults.editRange.insert
+      text_edit.replace = defaults.editRange.replace
+    end
+  end
+  return item
+end
+
 --- The result of `method` from the server, about `where`, for Neovim: nil if
 --- the cell is gone since. Items that may be resolved later record their
 --- cell, so they resolve in it.
@@ -193,28 +236,15 @@ local function to_client(method, result, where, context)
   end
   if RESOLVABLE[method] and type(result) == "table" then
     -- Tagged before translating, which drops the items about cells that are gone
-    local items, default, merge = result, nil, false
-    if result.items then -- a CompletionList
-      items, default = result.items, vim.tbl_get(result, "itemDefaults", "data")
-      merge = vim.tbl_get(result, "applyKind", "data") == vim.lsp.protocol.ApplyKind.Merge
-    end
+    local items = result.items or result -- a CompletionList, or a list
     local tagged = {}
     for i, original in ipairs(items) do
       tagged[i] = original
       -- A code action may be a Command, which has nothing to resolve
       if type(original) == "table" and type(original.command) ~= "string" then
         tagged[i] = vim.tbl_extend("force", {}, original)
-        -- What the client would send: the item with the list's default data, as Neovim applies it
-        local data = original.data
-        if merge and type(default) == "table" and type(data) == "table" then
-          data = vim.tbl_extend("force", default, data)
-        elseif data == nil then
-          data = default
-        end
-        if data ~= original.data then
-          original = vim.tbl_extend("force", original, { data = data })
-        end
-        translate.tag(tagged[i], cell_uri, original)
+        -- What the client would send: the item with the list's defaults
+        translate.tag(tagged[i], cell_uri, result.items and with_defaults(original, result) or original)
       end
     end
     result = result.items and vim.tbl_extend("force", result, { items = tagged }) or tagged
