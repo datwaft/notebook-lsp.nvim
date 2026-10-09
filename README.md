@@ -125,7 +125,8 @@ See the [open issues](https://github.com/datwaft/notebook-lsp.nvim/issues).
 
 ## Development
 
-See [DEVELOPMENT.md](DEVELOPMENT.md).
+See [DEVELOPMENT.md](DEVELOPMENT.md) to work on it, and
+[ARCHITECTURE.md](ARCHITECTURE.md) for how it works.
 
 ## License
 
