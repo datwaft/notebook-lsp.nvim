@@ -255,11 +255,15 @@ local function targets(notebook, params)
   local function before(a, b)
     return a.line < b.line or (a.line == b.line and a.character < b.character)
   end
-  --- The part of `range` in the cell's code, if any.
+  --- The part of `range` in the cell's code, if any. A range ends before its
+  --- end: it has some of the cell if it ends after the cell's start, or if
+  --- it's a position, at it.
   local function clip(cell, range)
     local start = { line = cell.start, character = 0 }
     local finish = { line = cell.start + #cell.lines, character = 0 } -- just after the cell's code
-    if before(range.start, finish) and not before(range["end"], start) then
+    local position = not before(range.start, range["end"])
+    local ends_in = before(start, range["end"]) or (position and not before(range["end"], start))
+    if before(range.start, finish) and ends_in then
       return {
         start = before(range.start, start) and start or range.start,
         ["end"] = before(finish, range["end"]) and finish or range["end"],

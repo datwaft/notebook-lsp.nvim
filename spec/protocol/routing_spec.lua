@@ -714,6 +714,35 @@ describe("request routing", function()
     }, by_cell)
   end)
 
+  -- A range ends before its end: one that ends where a cell starts has nothing of it
+  it("leaves out the cell a range ends at the start of", function()
+    local bufnr, cells = protocol.open_example(env)
+    request(bufnr, "textDocument/rangeFormatting", nil, {
+      range = { start = { line = rows.cell1, character = 0 }, ["end"] = { line = rows.cell2, character = 0 } },
+      options = { tabSize = 4, insertSpaces = true },
+    })
+    local requests = env.server:received("textDocument/rangeFormatting")
+    assert.same(
+      { cells[1] },
+      vim.tbl_map(function(params)
+        return params.textDocument.uri
+      end, requests)
+    )
+  end)
+
+  -- Such as a code action's, at the cursor
+  it("sends a range that's a position at the start of a cell to the cell", function()
+    local bufnr, cells = protocol.open_example(env)
+    local position = { line = rows.cell2, character = 0 }
+    request(bufnr, "textDocument/codeAction", nil, {
+      range = { start = position, ["end"] = position },
+      context = { diagnostics = {} },
+    })
+    local action = env.server:wait_for("textDocument/codeAction")
+    assert.equal(cells[2], action.textDocument.uri)
+    assert.same({ start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 0 } }, action.range)
+  end)
+
   -- The notebook protocol saves cells through their notebook: there is no "will save" for them
   it("answers willSaveWaitUntil for a notebook without asking the server", function()
     local bufnr = protocol.open_example(env)
