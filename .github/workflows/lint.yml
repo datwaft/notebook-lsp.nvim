@@ -25,3 +25,31 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           version: 2.5.2
           args: --check lua plugin spec
+
+  types:
+    name: Types
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # Its runtime has the types of Neovim's Lua API (see .luarc.json)
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: nightly
+
+      - name: Install lua-language-server
+        env:
+          VERSION: 3.19.1
+        run: |
+          mkdir -p "$RUNNER_TEMP/lua-language-server"
+          curl -fsSL "https://github.com/LuaLS/lua-language-server/releases/download/$VERSION/lua-language-server-$VERSION-linux-x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/lua-language-server"
+          echo "$RUNNER_TEMP/lua-language-server/bin" >> "$GITHUB_PATH"
+
+      - name: Check types
+        run: |
+          VIMRUNTIME="$(nvim --clean --headless -c 'lua io.write(vim.env.VIMRUNTIME)' -c q < /dev/null)"
+          export VIMRUNTIME
+          lua-language-server --check . --checklevel=Hint
