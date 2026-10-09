@@ -152,6 +152,52 @@ describe("request routing", function()
     assert.same({ opaque = true }, env.server:wait_for("completionItem/resolve").data)
   end)
 
+  -- The server gets an item back as from a .py file: with the list's defaults, as Neovim applies them
+  describe("resolves completion items with the list's default data", function()
+    --- The data the server gets back for each item of `list`, by label, when
+    --- Neovim's completion resolves it from `bufnr` at `position`.
+    local function resolved(list, bufnr, position)
+      handlers["textDocument/completion"] = function()
+        return vim.deepcopy(list)
+      end
+      local client = protocol.wait_attached(env, bufnr)
+      local result = request(bufnr, "textDocument/completion", position)
+      local data = {}
+      for _, candidate in ipairs(vim.lsp.completion._lsp_to_complete_items(result, "", client.id)) do
+        local item = candidate.user_data.nvim.lsp.completion_item
+        local count = #env.server:received("completionItem/resolve")
+        assert(client:request_sync("completionItem/resolve", item, 1000, bufnr))
+        data[item.label] = env.server:wait_for("completionItem/resolve", count + 1).data
+      end
+      return data
+    end
+
+    --- What the server gets back from a notebook, and from a .py file, for a
+    --- list whose default data applies to its items as `apply_kind` says.
+    local function from_both(apply_kind)
+      local list = {
+        itemDefaults = { data = { shared = 42 } },
+        applyKind = apply_kind,
+        items = { { label = "a" }, { label = "b", data = { specific = 7 } } },
+      }
+      local bufnr = protocol.open_example(env)
+      local notebook = resolved(list, bufnr, protocol.position(bufnr, rows.cell2 + 1, "x"))
+      return notebook, resolved(list, protocol.open(env, "utils.py", { "x = 1" }), { line = 0, character = 0 })
+    end
+
+    it("replacing the items' own", function()
+      local notebook, py = from_both(nil)
+      assert.same({ a = { shared = 42 }, b = { specific = 7 } }, notebook)
+      assert.same(py, notebook)
+    end)
+
+    it("merged into the items' own", function()
+      local notebook, py = from_both({ data = vim.lsp.protocol.ApplyKind.Merge })
+      assert.same({ a = { shared = 42 }, b = { shared = 42, specific = 7 } }, notebook)
+      assert.same(py, notebook)
+    end)
+  end)
+
   -- A position in a cell doesn't say which cell: the items must
   it("resolves items from several cells, each in its own cell", function()
     local bufnr, cells = protocol.open_example(env)

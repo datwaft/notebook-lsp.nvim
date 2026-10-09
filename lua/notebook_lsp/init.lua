@@ -193,9 +193,10 @@ local function to_client(method, result, where, context)
   end
   if RESOLVABLE[method] and type(result) == "table" then
     -- Tagged before translating, which drops the items about cells that are gone
-    local items, default = result, nil
+    local items, default, merge = result, nil, false
     if result.items then -- a CompletionList
-      items, default = result.items, result.itemDefaults and result.itemDefaults.data
+      items, default = result.items, vim.tbl_get(result, "itemDefaults", "data")
+      merge = vim.tbl_get(result, "applyKind", "data") == vim.lsp.protocol.ApplyKind.Merge
     end
     local tagged = {}
     for i, original in ipairs(items) do
@@ -203,9 +204,15 @@ local function to_client(method, result, where, context)
       -- A code action may be a Command, which has nothing to resolve
       if type(original) == "table" and type(original.command) ~= "string" then
         tagged[i] = vim.tbl_extend("force", {}, original)
-        if original.data == nil and default ~= nil then
-          -- What the client would send: the item with the list's default data
-          original = vim.tbl_extend("force", original, { data = default })
+        -- What the client would send: the item with the list's default data, as Neovim applies it
+        local data = original.data
+        if merge and type(default) == "table" and type(data) == "table" then
+          data = vim.tbl_extend("force", default, data)
+        elseif data == nil then
+          data = default
+        end
+        if data ~= original.data then
+          original = vim.tbl_extend("force", original, { data = data })
         end
         translate.tag(tagged[i], cell_uri, original)
       end
