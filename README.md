@@ -103,6 +103,11 @@ servers that are already attached.
   and gets those too.
 - A server's dynamic registration that selects documents only by a file
   pattern, such as `**/*.py`, doesn't apply to notebooks.
+- A dynamic registration that selects only some notebooks, by their type or
+  file, applies to every notebook in its cells' language: Neovim matches
+  registrations without looking at their `notebook` filter.
+- Changing the kernel's language in an open notebook doesn't change what
+  servers have of it: reopen it with `:edit` after.
 - Related reports about cells in pulled diagnostics (`relatedDocuments`) are
   ignored: a notebook's diagnostics are updated when the notebook itself is
   pulled. ty, ruff and basedpyright don't send related reports.
