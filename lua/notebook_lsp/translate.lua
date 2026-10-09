@@ -55,6 +55,45 @@ function M.shift(value, lines)
   return out
 end
 
+--- The diagnostics among `diagnostics`, Neovim's of a notebook buffer (as in
+--- a code action request), that are in `where`'s cell, for the server: in the
+--- cell's lines, with their related locations in cells in those cells' lines.
+--- Related locations in the notebook but in no cell are left out.
+---@param diagnostics lsp.Diagnostic[]
+---@param where notebook_lsp.Where
+---@return lsp.Diagnostic[]
+function M.cell_diagnostics(diagnostics, where)
+  local notebook, cell = where.notebook, where.cell
+  local out = like(diagnostics)
+  for _, diagnostic in ipairs(diagnostics) do
+    local line = diagnostic.range.start.line
+    if line >= cell.start and line <= cell.start + #cell.lines then
+      local moved = M.shift(diagnostic, -cell.start)
+      if diagnostic.relatedInformation then
+        moved.relatedInformation = like(diagnostic.relatedInformation)
+        for _, related in ipairs(diagnostic.relatedInformation) do
+          local location = related.location
+          if location.uri ~= notebook.uri then
+            table.insert(moved.relatedInformation, related)
+          else
+            local other = notebook:cell_at(location.range.start.line)
+            if other then
+              local range = M.shift(location.range, -other.start)
+              local uri = notebook:cell_uri(other.id)
+              table.insert(
+                moved.relatedInformation,
+                vim.tbl_extend("force", related, { location = { uri = uri, range = range } })
+              )
+            end
+          end
+        end
+      end
+      table.insert(out, moved)
+    end
+  end
+  return out
+end
+
 --- DocumentDiagnosticReport.relatedDocuments: the reports about other files.
 --- Those about cells are left out: each would replace all the diagnostics of
 --- its notebook buffer with the cell's.

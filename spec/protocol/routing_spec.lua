@@ -400,6 +400,29 @@ describe("request routing", function()
     }, by_cell)
   end)
 
+  -- What Neovim was given goes back: the server gets its own diagnostics, each location in its document
+  it("gives the server its diagnostics back in a code action request", function()
+    local bufnr, cells = protocol.open_example(env)
+    local published = {
+      range = range(1, 11, 1),
+      message = "x is redefined",
+      relatedInformation = {
+        { location = { uri = cells[1], range = range(1, 0, 1) }, message = "in another cell" },
+        {
+          location = { uri = vim.uri_from_fname(env.dir .. "/utils.py"), range = range(3, 0, 1) },
+          message = "in a file",
+        },
+      },
+    }
+    env.server:notify("textDocument/publishDiagnostics", { uri = cells[2], diagnostics = { published } })
+    local shown = vim.diagnostic.get(bufnr)[1].user_data.lsp
+    request(bufnr, "textDocument/codeAction", nil, {
+      range = range(rows.cell2 + 1, 11, 1),
+      context = { diagnostics = { shown } },
+    })
+    assert.same({ published }, env.server:wait_for("textDocument/codeAction").context.diagnostics)
+  end)
+
   -- Arguments are the server's, as data is: Neovim sends them back as they are.
   it("leaves the arguments of commands untouched", function()
     local bufnr, cells = protocol.open_example(env)

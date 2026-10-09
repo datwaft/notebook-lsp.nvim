@@ -214,20 +214,15 @@ end
 ---@return notebook_lsp.Target[]
 local function targets(notebook, params)
   local function target(cell, range)
-    local cell_params = vim.tbl_extend("force", params, { range = range })
-    local request_context = params.context
-    if type(request_context) == "table" and type(request_context.diagnostics) == "table" then
-      -- A code action request for a cell is about the cell's own diagnostics
-      cell_params.context = vim.tbl_extend("force", request_context, {
-        diagnostics = vim.tbl_filter(function(diagnostic)
-          local line = diagnostic.range.start.line
-          return line >= cell.start and line <= cell.start + #cell.lines
-        end, request_context.diagnostics),
-      })
-    end
-    cell_params = translate.shift(cell_params, -cell.start)
+    local where = { notebook = notebook, cell = cell }
+    local cell_params = translate.shift(vim.tbl_extend("force", params, { range = range }), -cell.start)
     cell_params.textDocument = vim.tbl_extend("force", cell_params.textDocument, { uri = notebook:cell_uri(cell.id) })
-    return { where = { notebook = notebook, cell = cell }, params = cell_params }
+    local diagnostics = vim.tbl_get(params, "context", "diagnostics")
+    if type(diagnostics) == "table" then
+      -- A code action request for a cell is about the cell's own diagnostics
+      cell_params.context.diagnostics = translate.cell_diagnostics(diagnostics, where)
+    end
+    return { where = where, params = cell_params }
   end
   local function before(a, b)
     return a.line < b.line or (a.line == b.line and a.character < b.character)
