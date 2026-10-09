@@ -235,6 +235,15 @@ local function to_client(method, result, where, context)
   if not now then
     return nil
   end
+  if method == "textDocument/diagnostic" and type(result) == "table" and result.items then
+    -- Neovim gives the diagnostics back in code action requests, where the server gets its own
+    local tagged = vim.tbl_map(function(diagnostic)
+      local copy = vim.tbl_extend("force", {}, diagnostic)
+      translate.tag(copy, cell_uri, diagnostic)
+      return copy
+    end, result.items)
+    result = vim.tbl_extend("force", result, { items = tagged })
+  end
   if RESOLVABLE[method] and type(result) == "table" then
     -- Tagged before translating, which drops the items about cells that are gone
     local items = result.items or result -- a CompletionList, or a list
@@ -520,7 +529,12 @@ local function intercept(client)
     for _, cell in ipairs(notebook:read()) do
       current[cell.id] = by_cell[cell.id]
       for _, diagnostic in ipairs(by_cell[cell.id] or {}) do
-        table.insert(diagnostics, translate.to_client(diagnostic, { notebook = notebook, cell = cell }, context))
+        local shown = translate.to_client(diagnostic, { notebook = notebook, cell = cell }, context)
+        if shown ~= nil then
+          -- Neovim gives it back in code action requests, where the server gets its own
+          translate.tag(shown, notebook:cell_uri(cell.id), diagnostic)
+          table.insert(diagnostics, shown)
+        end
       end
     end
     pushed[notebook.uri] = current

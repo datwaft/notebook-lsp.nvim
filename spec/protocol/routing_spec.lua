@@ -566,6 +566,28 @@ describe("request routing", function()
     assert.same({ published }, env.server:wait_for("textDocument/codeAction").context.diagnostics)
   end)
 
+  -- Neovim keeps the diagnostic as the plugin gave it, while the other notebook's cells move
+  it("gives the server its diagnostics back after the cells of their related locations move", function()
+    local bufnr, cells = protocol.open_example(env)
+    local other_bufnr = protocol.open(env, "other.md", protocol.notebook(protocol.example.body))
+    protocol.wait_attached(env, other_bufnr)
+    local other = env.server:wait_for("notebookDocument/didOpen", 2).cellTextDocuments
+    local published = {
+      range = range(1, 11, 1),
+      message = "x is redefined",
+      relatedInformation = { { location = { uri = other[2].uri, range = range(1, 0, 1) }, message = "elsewhere" } },
+    }
+    env.server:notify("textDocument/publishDiagnostics", { uri = cells[2], diagnostics = { published } })
+    vim.api.nvim_buf_set_lines(other_bufnr, rows.prose, rows.prose, true, { "More", "prose." })
+    local shown = vim.diagnostic.get(bufnr)[1].user_data.lsp
+    vim.cmd.buffer(bufnr)
+    request(bufnr, "textDocument/codeAction", nil, {
+      range = range(rows.cell2 + 1, 11, 1),
+      context = { diagnostics = { shown } },
+    })
+    assert.same({ published }, env.server:wait_for("textDocument/codeAction").context.diagnostics)
+  end)
+
   -- Arguments are the server's, as data is: Neovim sends them back as they are.
   it("leaves the arguments of commands untouched", function()
     local bufnr, cells = protocol.open_example(env)

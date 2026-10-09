@@ -57,9 +57,11 @@ function M.shift(value, lines)
 end
 
 --- The diagnostics among `diagnostics`, Neovim's of a notebook buffer (as in
---- a code action request), that are in `where`'s cell, for the server: in the
---- cell's lines, with their related locations in cells (of any notebook) in
---- those cells' lines. Related locations in a notebook but in no cell are left out.
+--- a code action request), that are in `where`'s cell, for the server. Those
+--- the plugin gave Neovim are the server's own, as it gave them. Others are
+--- moved to the cell's lines, with their related locations in cells (of any
+--- notebook) in those cells' lines; related locations in a notebook but in no
+--- cell are left out.
 ---@param diagnostics lsp.Diagnostic[]
 ---@param where notebook_lsp.Where
 ---@param notebook_of fun(uri: string): notebook_lsp.Notebook? the notebook of the buffer with `uri`, if any
@@ -68,8 +70,13 @@ function M.cell_diagnostics(diagnostics, where, notebook_of)
   local cell = where.cell
   local out = like(diagnostics)
   for _, diagnostic in ipairs(diagnostics) do
+    local cell_uri, original = M.untag(diagnostic)
     local line = diagnostic.range.start.line
-    if line >= cell.start and line <= cell.start + #cell.lines then
+    if cell_uri then
+      if cell_uri == where.notebook:cell_uri(cell.id) then
+        table.insert(out, original)
+      end
+    elseif line >= cell.start and line <= cell.start + #cell.lines then
       local moved = M.shift(diagnostic, -cell.start)
       if diagnostic.relatedInformation then
         moved.relatedInformation = like(diagnostic.relatedInformation)

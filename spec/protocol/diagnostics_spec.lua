@@ -171,6 +171,36 @@ describe("pulled diagnostics", function()
     end
   end)
 
+  -- As for pushed diagnostics: the server gets its own back, though the other notebook's cells moved
+  it("gives the server its pulled diagnostics back in a code action request", function()
+    local other_cell = (vim.uri_from_fname(env.dir .. "/other.md.ipynb"):gsub("^file:", "vscode-notebook-cell:"))
+      .. "#c2"
+    local pulled = diagnostic(1, 11, "x is redefined")
+    pulled.relatedInformation = {
+      { location = { uri = other_cell, range = diagnostic(1, 0, "").range }, message = "elsewhere" },
+    }
+    env.server.handlers["textDocument/diagnostic"] = function(params)
+      return {
+        kind = "full",
+        items = vim.endswith(params.textDocument.uri, "/notebook.md.ipynb#c2") and { pulled } or {},
+      }
+    end
+    local other_bufnr = protocol.open(env, "other.md", protocol.notebook(protocol.example.body))
+    protocol.wait_attached(env, other_bufnr)
+    local bufnr = protocol.open(env, "notebook.md", protocol.notebook(protocol.example.body))
+    local client = protocol.wait_attached(env, bufnr)
+    wait_shown(bufnr, { { lnum = rows.cell2 + 1, col = 11, message = "x is redefined" } })
+    vim.api.nvim_buf_set_lines(other_bufnr, rows.prose, rows.prose, true, { "More", "prose." })
+
+    local position = { line = rows.cell2 + 1, character = 11 }
+    assert(client:request_sync("textDocument/codeAction", {
+      textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+      range = { start = position, ["end"] = position },
+      context = { diagnostics = { vim.diagnostic.get(bufnr)[1].user_data.lsp } },
+    }, 1000, bufnr))
+    assert.same({ pulled }, env.server:wait_for("textDocument/codeAction").context.diagnostics)
+  end)
+
   -- ruff does both for notebook cells, which would show each of its diagnostics twice.
   it("ignores diagnostics the server also pushes", function()
     local bufnr, cells = protocol.open_example(env)
