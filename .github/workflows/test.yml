@@ -31,6 +31,8 @@ jobs:
   test:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # A run that hangs would otherwise take GitHub's default of 6 hours
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

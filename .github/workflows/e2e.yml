@@ -31,6 +31,8 @@ jobs:
   e2e:
     name: E2E (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Generous for a run that has to download the servers; one that hangs would otherwise take 6 hours
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
