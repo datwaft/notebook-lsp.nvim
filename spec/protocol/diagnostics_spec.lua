@@ -258,14 +258,18 @@ describe("pulled diagnostics", function()
         return { [cells[1]] = { kind = "full", items = { diagnostic(1, 0, "related to cell 1") } } }
       end
     end
+    -- A diagnostic of its own, to see once the report is shown
+    local pull = env.server.handlers["textDocument/diagnostic"]
+    env.server.handlers["textDocument/diagnostic"] = function(params)
+      local report = pull(params)
+      if vim.endswith(params.textDocument.uri, "utils.py") then
+        report.items = { diagnostic(0, 0, "in utils") }
+      end
+      return report
+    end
     local utils = protocol.open(env, "utils.py", { "x = 1" })
     protocol.wait_attached(env, utils)
-    vim.wait(1000, function()
-      return #vim.tbl_filter(function(params)
-        return params.textDocument.uri == vim.uri_from_bufnr(utils)
-      end, env.server:received("textDocument/diagnostic")) > 0
-    end)
-    vim.wait(100) -- for the report to be shown
+    wait_shown(utils, { { lnum = 0, col = 0, message = "in utils" } })
     assert.is_false(has_cell_buffer())
     assert.same({
       { lnum = rows.cell1, col = 7, message = "unused" },
