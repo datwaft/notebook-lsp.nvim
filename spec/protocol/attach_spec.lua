@@ -164,9 +164,10 @@ describe("attaching", function()
       env = protocol.start({ capabilities = capabilities })
       local detached = watch_detaching()
       protocol.open(env, "notebook.md", protocol.notebook(protocol.example.body))
-      vim.wait(1000, function()
+      local decided = vim.wait(1000, function()
         return detached() or #env.server:received("notebookDocument/didOpen") > 0
       end, 5)
+      assert(decided, "the server neither opened the notebook nor detached")
       return env.server:received("notebookDocument/didOpen")[1]
     end
 

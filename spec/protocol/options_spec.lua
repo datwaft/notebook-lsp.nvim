@@ -87,16 +87,18 @@ describe("options", function()
       local dir = vim.fn.tempname()
       vim.fn.mkdir(dir, "p")
       vim.fn.writefile({}, dir .. "/pyproject.toml")
-      local attached = {}
+      local buffers = {}
       for _, name in ipairs({ "private.md", "public.md" }) do
         vim.fn.writefile(protocol.notebook(protocol.example.body), dir .. "/" .. name)
         vim.cmd.edit(dir .. "/" .. name)
-        local bufnr = vim.api.nvim_get_current_buf()
-        attached[name] = vim.wait(1000, function()
-          return #vim.lsp.get_clients({ bufnr = bufnr, name = "fake" }) > 0
-        end, 5)
+        buffers[name] = vim.api.nvim_get_current_buf()
       end
-      return attached
+      -- Once the notebook opened after it is attached, the decision for the first one is made
+      local public = vim.wait(1000, function()
+        return #vim.lsp.get_clients({ bufnr = buffers["public.md"], name = "fake" }) > 0
+      end, 5)
+      local private = #vim.lsp.get_clients({ bufnr = buffers["private.md"], name = "fake" }) > 0
+      return { ["private.md"] = private, ["public.md"] = public }
     ]])
     assert.same({ ["private.md"] = false, ["public.md"] = true }, attached)
   end)

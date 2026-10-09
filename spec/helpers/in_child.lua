@@ -110,10 +110,15 @@ function M.has_any_diagnostic(needle)
   return M.has_diagnostic(needle, "")
 end
 
---- Whether no diagnostic is on the line containing `needle` (or the line is gone).
----@param needle string plain text
-function M.has_no_diagnostic(needle)
-  return not M.has_any_diagnostic(needle)
+--- Whether no diagnostic, on any line, has a message containing `pattern`.
+---@param pattern string Lua pattern
+function M.has_no_message(pattern)
+  for _, diagnostic in ipairs(M.diagnostics()) do
+    if diagnostic.message:find(pattern) then
+      return false
+    end
+  end
+  return true
 end
 
 --- 0-based row and column of the first occurrence of `needle` in the buffer.

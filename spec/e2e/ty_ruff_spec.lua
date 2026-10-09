@@ -177,7 +177,8 @@ describe("ty and ruff on a notebook", function()
     child:call("set_lines", last, last, { "", "```python", "new_cell = undefined_new", "```" })
     assert.is_true(child:wait_for(30000, "has_diagnostic", "undefined_new", "undefined_new"))
 
+    -- Its diagnostics go with it, rather than stay on whatever line is there now
     child:call("set_lines", last, last + 4, {})
-    assert.is_true(child:wait_for(30000, "has_no_diagnostic", "undefined_new"))
+    assert.is_true(child:wait_for(30000, "has_no_message", "undefined_new"))
   end)
 end)
