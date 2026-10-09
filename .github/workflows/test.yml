@@ -50,4 +50,6 @@ jobs:
           version: 0.47.0
 
       - name: Run tests
-        run: lx test
+        # nlua runs its stdin as Lua after the tests when stdin isn't a terminal:
+        # an empty one ends it, where one that's never closed would hang the run
+        run: lx test < /dev/null

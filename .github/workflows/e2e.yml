@@ -59,4 +59,6 @@ jobs:
           key: uv-${{ runner.os }}-${{ hashFiles('spec/helpers/tools.lua') }}
 
       - name: Run tests
-        run: lx test -- --run=e2e
+        # nlua runs its stdin as Lua after the tests when stdin isn't a terminal:
+        # an empty one ends it, where one that's never closed would hang the run
+        run: lx test -- --run=e2e < /dev/null
