@@ -639,7 +639,7 @@ local function intercept(client)
   local function pass_through(method, params, callback, notify_reply)
     return rpc.request(method, params, function(err, result, id)
       if result ~= nil and next(notebooks) then
-        result = translate.to_client(result, nil, context)
+        result = translate.to_client(tag_hierarchy(method, result), nil, context)
       end
       callback(err, result, id)
     end, notify_reply)

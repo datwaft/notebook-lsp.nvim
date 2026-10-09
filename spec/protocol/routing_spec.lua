@@ -379,6 +379,19 @@ describe("request routing", function()
       assert(client:request_sync("typeHierarchy/subtypes", { item = supertypes[1] }, 1000, bufnr))
       assert.same(item("A", cells[1], 1), env.server:wait_for("typeHierarchy/subtypes").item)
     end)
+
+    it("prepares an item in the notebook from a .py file and asks for its calls with the server's item", function()
+      local bufnr, cells = protocol.open_example(env)
+      handlers["textDocument/prepareCallHierarchy"] = function()
+        return { item("f", cells[2], 0) }
+      end
+      local py = protocol.open(env, "utils.py", { "f()" })
+      local client = protocol.wait_attached(env, py)
+      local prepared = request(py, "textDocument/prepareCallHierarchy", { line = 0, character = 0 })
+      assert.equal(vim.uri_from_bufnr(bufnr), prepared[1].uri)
+      assert(client:request_sync("callHierarchy/incomingCalls", { item = prepared[1] }, 1000, py))
+      assert.same(item("f", cells[2], 0), env.server:wait_for("callHierarchy/incomingCalls").item)
+    end)
   end)
 
   it("gives each cell only its own diagnostics in a code action request", function()
