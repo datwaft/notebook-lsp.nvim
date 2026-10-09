@@ -1,3 +1,4 @@
+local fake_server = require("helpers.fake_server")
 local protocol = require("helpers.protocol")
 
 local rows = protocol.example.rows
@@ -349,4 +350,87 @@ describe("edits from the server", function()
     wait_row(bufnr, rows.cell1, "x = 1")
     assert.same(action, env.server:wait_for("codeAction/resolve"))
   end)
+end)
+
+-- The edits of a cell, applied as Neovim applies the same edits to a document
+-- of its own: one with the cell's code, and a line after it as the cell has
+describe("edits from a server in each position encoding", function()
+  local CODE = { "s = 'é😀'", "t = 1" }
+
+  after_each(function()
+    protocol.stop()
+  end)
+
+  --- The lines of the cell, and of the document of its own, once a server
+  --- with `encoding` sends both `batches`: the edits of successive
+  --- TextDocumentEdits, made for the code's `lines`.
+  ---@param encoding 'utf-8'|'utf-16'|'utf-32'
+  ---@param batches fun(lines: string[], encoding: string): lsp.TextEdit[][]
+  local function both(encoding, batches)
+    local capabilities = vim.deepcopy(fake_server.capabilities)
+    capabilities.positionEncoding = encoding
+    local env = protocol.start({ capabilities = capabilities })
+    local notebook = protocol.open(env, "notebook.md", protocol.notebook(vim.list_extend({ "", "```python" }, CODE)))
+    vim.api.nvim_buf_set_lines(notebook, -1, -1, true, { "```" })
+    protocol.wait_attached(env, notebook)
+    local cell = env.server:wait_for("notebookDocument/didOpen").cellTextDocuments[1].uri
+    local own = protocol.open(env, "own.py", vim.list_extend(vim.deepcopy(CODE), { "# after" }))
+    protocol.wait_attached(env, own)
+
+    for _, uri in ipairs({ cell, vim.uri_from_bufnr(own) }) do
+      local changes = vim.tbl_map(function(edits)
+        return { textDocument = { uri = uri, version = vim.NIL }, edits = edits }
+      end, batches(CODE, encoding))
+      assert.same(
+        { applied = true },
+        env.server:request("workspace/applyEdit", { edit = { documentChanges = changes } })
+      )
+    end
+    local lines = protocol.lines(notebook)
+    local first = #protocol.header + 3
+    local fence = assert(vim.iter(ipairs(lines)):find(function(i, line)
+      return i >= first and line == "```"
+    end))
+    return vim.list_slice(lines, first, fence - 1), vim.list_slice(protocol.lines(own), 1, #protocol.lines(own) - 1)
+  end
+
+  --- The position of the byte after `text` in `line`, counted in `encoding`.
+  local function after(line, row, text, encoding)
+    local byte = assert(line:find(text, 1, true)) + #text - 1
+    return { line = row, character = vim.str_utfindex(line, encoding, byte, false) }
+  end
+
+  local cases = {
+    ["replacing a character outside the BMP"] = function(lines, encoding)
+      local range = { start = after(lines[1], 0, "é", encoding), ["end"] = after(lines[1], 0, "😀", encoding) }
+      return { { { range = range, newText = "x" } } }
+    end,
+    ["inserting past and at the end of a line, then changing another"] = function(lines, encoding)
+      local finish = after(lines[1], 0, "'é😀'", encoding)
+      local past = { line = 0, character = finish.character + 1 }
+      return {
+        {
+          { range = { start = past, ["end"] = past }, newText = "A" },
+          { range = { start = finish, ["end"] = finish }, newText = "B" },
+        },
+        { { range = { start = { line = 1, character = 0 }, ["end"] = { line = 1, character = 1 } }, newText = "T" } },
+      }
+    end,
+    ["inserting a line ending with \\r\\n, then changing the line after it"] = function()
+      local start = { line = 1, character = 0 }
+      return {
+        { { range = { start = start, ["end"] = start }, newText = "u = 2\r\n" } },
+        { { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 1 } }, newText = "T" } },
+      }
+    end,
+  }
+
+  for _, encoding in ipairs({ "utf-8", "utf-16", "utf-32" }) do
+    for name, batches in pairs(cases) do
+      it(("%s, in %s"):format(name, encoding), function()
+        local cell, own = both(encoding, batches)
+        assert.same(own, cell)
+      end)
+    end
+  end
 end)
