@@ -178,7 +178,9 @@ describe("request routing", function()
       local list = { itemDefaults = defaults, applyKind = apply_kind, items = items }
       local bufnr = protocol.open_example(env)
       local notebook = resolved(list, bufnr, protocol.position(bufnr, rows.cell2 + 1, "x"))
-      return notebook, resolved(list, protocol.open(env, "utils.py", { "x = 1" }), { line = 0, character = 0 })
+      -- The same code as the cell's, at the same position in it
+      local py = protocol.open(env, "utils.py", vim.split(vim.trim(protocol.example.texts[2]), "\n"))
+      return notebook, resolved(list, py, protocol.position(py, 1, "x"))
     end
 
     local items = { { label = "a" }, { label = "b", data = { specific = 7 } } }
