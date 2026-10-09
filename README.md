@@ -1,15 +1,21 @@
 # notebook-lsp.nvim
 
-LSP support for [jupytext](https://jupytext.readthedocs.io) Markdown notebooks
-in Neovim, through the LSP notebook protocol (`notebookDocument/*`).
+Language servers for [jupytext](https://jupytext.readthedocs.io) Markdown
+notebooks in Neovim, through the LSP notebook protocol (`notebookDocument/*`).
 
-Neovim edits the notebook as one Markdown buffer. Your existing language
-servers (basedpyright, ty, ruff, ...) see a notebook whose cells are exactly
-the code cells jupytext would produce: diagnostics, completion, code actions,
-formatting and rename work inside cells, and names are shared across cells.
+You edit the notebook as one Markdown buffer. Your language servers (ty, ruff,
+basedpyright, ...) see a notebook whose cells are the code cells jupytext would
+produce, so diagnostics, completion, hover, code actions, formatting, rename
+and the rest work inside cells, and names are shared across them.
 
-> [!WARNING]
-> Work in progress: nothing works yet.
+Unlike [otter.nvim](https://github.com/jmbuhr/otter.nvim), there are no hidden
+buffers for servers to attach to, and no extra clients: the servers that serve
+your `.py` files serve your notebooks too, through the protocol editors such
+as VS Code use for Jupyter notebooks.
+
+> [!NOTE]
+> Early, and used by its author for now: it isn't announced yet, and may change
+> without notice.
 
 ## Requirements
 
@@ -19,6 +25,23 @@ formatting and rename work inside cells, and names are shared across cells.
   [basedpyright](https://github.com/DetachHead/basedpyright) and
   [pyright](https://github.com/microsoft/pyright), configured for example by
   [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig)
+
+## Installation
+
+With `vim.pack`:
+
+```lua
+vim.pack.add({ "https://github.com/datwaft/notebook-lsp.nvim" })
+```
+
+Or with [lazy.nvim](https://github.com/folke/lazy.nvim):
+
+```lua
+{ "datwaft/notebook-lsp.nvim", lazy = false }
+```
+
+Don't lazy-load it: it must extend the servers' configs before they attach.
+Loading it only does that.
 
 ## Usage
 
@@ -123,25 +146,7 @@ servers that are already attached.
 
 ## Development
 
-Tests run with [busted](https://lunarmodules.github.io/busted/) inside Neovim
-(through [nlua](https://codeberg.org/mfussenegger/nlua)), managed by
-[lux](https://github.com/lumen-oss/lux):
-
-```sh
-lx test                 # unit and protocol tests: fast, no external tools
-lx test -- --run=e2e    # oracle and end-to-end tests: need uv
-```
-
-| Directory | What it tests |
-|---|---|
-| `spec/unit` | Pure modules, such as the jupytext cell reader |
-| `spec/protocol` | The plugin between Neovim's LSP client and an in-process fake server |
-| `spec/oracle` | That the reader's fixtures match what jupytext itself produces |
-| `spec/e2e` | Real servers in a separate Neovim process |
-
-The oracle and end-to-end tests run pinned versions of jupytext and the
-language servers through `uvx` (see `spec/helpers/tools.lua`), with uv's cache
-in `.tests/`.
+See [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 
