@@ -92,13 +92,13 @@ describe("edits from the server", function()
   -- The cell's text ends with a line break, the one before its closing fence:
   -- edits must leave the fence on its own line, or the cell would go on past it
   describe("at the end of a cell, keeps the closing fence on its line", function()
-    --- Applies `text_edit` to the first cell, and checks that it then reads `cell`,
+    --- Applies `edits` to the first cell, and checks that it then reads `cell`,
     --- followed by its closing fence, and that the rest of the notebook is untouched.
-    ---@param text_edit lsp.TextEdit
+    ---@param edits lsp.TextEdit[]
     ---@param cell string[]
-    local function apply(text_edit, cell)
+    local function apply(edits, cell)
       local bufnr, cells = protocol.open_example(env)
-      local result = env.server:request("workspace/applyEdit", { edit = { changes = { [cells[1]] = { text_edit } } } })
+      local result = env.server:request("workspace/applyEdit", { edit = { changes = { [cells[1]] = edits } } })
       assert.same({ applied = true }, result)
       local lines = protocol.lines(bufnr)
       assert.same(
@@ -121,20 +121,25 @@ describe("edits from the server", function()
     end
 
     it("inserting text without a line break", function()
-      apply(edit(2, 0, 0, "y = 2"), { "import os", "x = 1", "y = 2" })
+      apply({ edit(2, 0, 0, "y = 2") }, { "import os", "x = 1", "y = 2" })
     end)
 
     it("deleting the cell's last line break", function()
-      apply(replace(1, 5, 2, 0, ""), { "import os", "x = 1" })
+      apply({ replace(1, 5, 2, 0, "") }, { "import os", "x = 1" })
     end)
 
     it("deleting from the middle of a line to the end", function()
-      apply(replace(1, 1, 2, 0, ""), { "import os", "x" })
+      apply({ replace(1, 1, 2, 0, "") }, { "import os", "x" })
     end)
 
     -- A position past the end of a document is its end
     it("deleting past the end of the cell", function()
-      apply(replace(1, 0, 9, 0, ""), { "import os" })
+      apply({ replace(1, 0, 9, 0, "") }, { "import os" })
+    end)
+
+    -- Edits are applied together: it's what they leave that must end with a line break
+    it("deleting the last line break and inserting at the end together", function()
+      apply({ replace(1, 5, 2, 0, ""), edit(2, 0, 0, " + 2") }, { "import os", "x = 1 + 2" })
     end)
   end)
 

@@ -16,6 +16,7 @@ local M = {}
 ---@field locate notebook_lsp.Locate
 ---@field current fun(where: notebook_lsp.Where, version: integer): boolean whether the cell's text is still the server's `version` of it
 ---@field skip fun(uri: string) skips the edits to the notebook (or the cell that's gone) `uri`
+---@field encoding fun(): 'utf-8'|'utf-16'|'utf-32' the server's, which positions count characters in
 
 local function is_position(value)
   return type(value.line) == "number" and type(value.character) == "number"
@@ -111,29 +112,61 @@ local function related_documents(reports, context)
   return out
 end
 
---- `edit`, a TextEdit of `cell`, such that the cell's text still ends with a
---- line break once it's applied: in the notebook buffer, the closing fence
---- comes right after it, and must stay on a line of its own. A position past
---- the end of the cell is its end, as for any document.
----@param edit lsp.TextEdit
+--- Whether `value` is a TextEdit (or an AnnotatedTextEdit).
+local function is_text_edit(value)
+  return type(value) == "table" and type(value.range) == "table" and type(value.newText) == "string"
+end
+
+--- `edits`, TextEdits of `cell` applied together, such that the cell's text
+--- still ends with a line break once they're applied: in the notebook buffer,
+--- the closing fence comes right after it, and must stay on a line of its own.
+--- A position past the end of the cell is its end, as for any document, and
+--- if the edits leave the text without its last line break, one more edit
+--- puts it back, after all of them.
+---@param edits lsp.TextEdit[]
 ---@param cell notebook_lsp.Cell
----@return lsp.TextEdit
-local function keep_fence(edit, cell)
+---@param encoding 'utf-8'|'utf-16'|'utf-32' the server's, which positions count characters in
+---@return lsp.TextEdit[]
+local function keep_fence(edits, cell, encoding)
   local last = #cell.lines -- the line after the cell's last line break: the fence's
+  local finish = { line = last, character = 0 }
   local function clamp(position)
-    return position.line < last and position or { line = last, character = 0 }
+    return position.line < last and position or finish
   end
-  local start, finish = clamp(edit.range.start), clamp(edit.range["end"])
-  if finish.line < last then
-    return edit
+  --- The byte of the cell's text where `position`, clamped, is.
+  local function offset(position)
+    local bytes = 0
+    for i = 1, position.line do
+      bytes = bytes + #cell.lines[i] + 1
+    end
+    if position.line < last then
+      bytes = bytes + vim.str_byteindex(cell.lines[position.line + 1], encoding, position.character, false)
+    end
+    return bytes
   end
-  local text = edit.newText
-  -- The text before the edit ends with a line break, unless it starts in the middle of a line
-  local after_break = start.line == last or start.character == 0
-  if (text == "" and not after_break) or (text ~= "" and not vim.endswith(text, "\n")) then
-    text = text .. "\n"
+
+  local out, spans = like(edits), {}
+  for i, edit in ipairs(edits) do
+    local range = { start = clamp(edit.range.start), ["end"] = clamp(edit.range["end"]) }
+    out[i] = vim.tbl_extend("force", edit, { range = range })
+    table.insert(spans, { from = offset(range.start), to = offset(range["end"]), text = edit.newText, index = i })
   end
-  return vim.tbl_extend("force", edit, { range = { start = start, ["end"] = finish }, newText = text })
+  -- The text they leave: applied in the order of where they start, then in theirs
+  table.sort(spans, function(a, b)
+    return a.from < b.from or (a.from == b.from and a.index < b.index)
+  end)
+  local text, done = {}, 0
+  for _, span in ipairs(spans) do
+    table.insert(text, cell.text:sub(done + 1, span.from))
+    table.insert(text, span.text)
+    done = math.max(done, span.to)
+  end
+  table.insert(text, cell.text:sub(done + 1))
+  local result = table.concat(text)
+  if result ~= "" and not vim.endswith(result, "\n") then
+    table.insert(out, { range = { start = finish, ["end"] = finish }, newText = "\n" })
+  end
+  return out
 end
 
 --- `value` from the server, for Neovim: positions in cells become positions
@@ -155,6 +188,9 @@ function M.to_client(value, where, context)
     return where and M.shift(value, where.cell.start) or value
   end
   if vim.islist(value) then
+    if where and #value > 0 and vim.iter(value):all(is_text_edit) then
+      value = keep_fence(value, where.cell, context.encoding())
+    end
     local out = like(value)
     for _, item in ipairs(value) do
       local translated = M.to_client(item, where, context)
@@ -182,9 +218,6 @@ function M.to_client(value, where, context)
   if inner == false or target == false then
     return nil
   end
-  if inner and type(value.newText) == "string" and type(value.range) == "table" then
-    value = keep_fence(value, inner.cell)
-  end
 
   local out = like(value)
   for key, item in pairs(value) do
@@ -208,6 +241,11 @@ function M.to_client(value, where, context)
       out[key] = M.document_changes(item, context)
     elseif key == "relatedDocuments" and type(item) == "table" then
       out[key] = related_documents(item, context)
+    elseif key == "textEdit" and inner and is_text_edit(item) then
+      -- A completion item's, which can't become two edits
+      local edits = keep_fence({ item }, inner.cell, context.encoding())
+      local edit = #edits == 1 and edits[1] or vim.tbl_extend("force", edits[1], { newText = edits[1].newText .. "\n" })
+      out[key] = M.to_client(edit, inner, context)
     else
       out[key] = M.to_client(item, inner, context)
     end

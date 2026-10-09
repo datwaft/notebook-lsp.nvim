@@ -491,6 +491,9 @@ local function intercept(client)
   ---@type notebook_lsp.Context
   local context = {
     locate = locate,
+    encoding = function()
+      return client.offset_encoding
+    end,
     current = function(where, version)
       local state = synced[where.notebook.uri]
       for _, cell in ipairs(state and state.cells or {}) do
