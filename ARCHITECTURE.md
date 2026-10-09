@@ -169,7 +169,10 @@ cell `#c2`.
 
 The plugin tells the server about the notebook when Neovim would tell it about
 the buffer. It doesn't use the text in Neovim's messages: it reads the cells
-from the buffer again, and compares them with what it last sent.
+from the buffer again, and compares them with what it last sent. For a cell
+whose text changed, it sends the blocks of lines that differ
+(`translate.line_edits()`), or the cell's whole text to a server that asks for
+full changes.
 
 | Neovim sends | The plugin sends instead |
 |---|---|
@@ -315,7 +318,7 @@ from LSP 3.17.
 | Client capability `notebookDocument.synchronization` | Sets it, with `dynamicRegistration = false` and `executionSummarySupport = false` |
 | Server capability `notebookDocumentSync` | Syncs a notebook if one of its notebook selectors matches. A selector's `notebook` can be a notebook type or a filter, with `notebookType`, `scheme` and `pattern` (also a relative pattern). Its `cells`, if it has any, must include the kernel's language. |
 | `notebookDocument/didOpen` | The notebook type is `jupyter-notebook`. Every cell is a code cell (`NotebookCellKind.Code`). Each cell document has the notebook's language (`languageId`), version 1, and its text. |
-| `notebookDocument/didChange` | Sent only when something changed, with the notebook's version one higher. Cells added or removed are one change to the cell array, with the documents to open and close. A cell whose text changed gets its whole new text and a version one higher. |
+| `notebookDocument/didChange` | Sent only when something changed, with the notebook's version one higher. Cells added or removed are one change to the cell array, with the documents to open and close. A cell whose text changed gets a version one higher, and the lines that changed: whole lines replaced, last first, for a server that asks for incremental changes, or else its whole new text. |
 | `notebookDocument/didSave` | Sent when the buffer is written, if `notebookDocumentSync.save` asks for it |
 | `notebookDocument/didClose` | Closes the notebook and every cell document |
 | Requests about the notebook | Each names a cell document. Positions are in the cell's lines, with the encoding the client and server agreed on. |
@@ -336,10 +339,6 @@ from LSP 3.17.
 - **Only code cells in the kernel's language** are sent, also to servers whose
   selector asks for other cells
   ([#2](https://github.com/datwaft/notebook-lsp.nvim/issues/2)).
-- **A changed cell is sent with its whole text,** also to servers that ask for
-  incremental changes (`TextDocumentSyncKind.Incremental`), where the
-  specification expects only the changed parts. ty, ruff and basedpyright
-  accept it.
 - **The specification doesn't define cell URIs.** The plugin uses the scheme
   VS Code uses, `vscode-notebook-cell:`.
 - **`textDocument/willSaveWaitUntil`** for a notebook buffer is answered with no

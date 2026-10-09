@@ -57,6 +57,36 @@ describe("notebook synchronization", function()
     assert.equal("import os\nx = 2\n", protocol.apply_changes(protocol.example.texts[1], change.textContent[1].changes))
   end)
 
+  -- The fake server asks for incremental changes, as ty, ruff and basedpyright do
+  it("sends only the lines that changed in a cell", function()
+    local bufnr = protocol.open_example(env)
+    vim.api.nvim_buf_set_text(bufnr, rows.cell1 + 1, 4, rows.cell1 + 1, 5, { "2" }) -- x = 1 -> x = 2
+    local change = env.server:wait_for("notebookDocument/didChange").change.cells
+    assert.same({
+      { range = { start = { line = 1, character = 0 }, ["end"] = { line = 2, character = 0 } }, text = "x = 2\n" },
+    }, change.textContent[1].changes)
+  end)
+
+  -- Each change applies to the text the ones before it left
+  it("sends changes to several parts of a cell so that each applies after the one before", function()
+    local bufnr = protocol.open_example(env)
+    vim.api.nvim_buf_set_lines(bufnr, rows.cell1, rows.cell1 + 2, true, { "import re", "import sys", "x = 1", "y = 2" })
+    local changes = env.server:wait_for("notebookDocument/didChange").change.cells.textContent[1].changes
+    assert.equal(2, #changes)
+    assert.equal("import re\nimport sys\nx = 1\ny = 2\n", protocol.apply_changes(protocol.example.texts[1], changes))
+  end)
+
+  it("sends the lines of a cell that was empty", function()
+    local bufnr = protocol.open_example(env)
+    vim.api.nvim_buf_set_lines(bufnr, rows.cell1, rows.cell1 + 2, true, {})
+    env.server:wait_for("notebookDocument/didChange")
+    vim.api.nvim_buf_set_lines(bufnr, rows.cell1, rows.cell1, true, { "y = 2" })
+    local changes = env.server:wait_for("notebookDocument/didChange", 2).change.cells.textContent[1].changes
+    assert.same({
+      { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 0 } }, text = "y = 2\n" },
+    }, changes)
+  end)
+
   it("doesn't tell the server about edits outside cells", function()
     local bufnr = protocol.open_example(env)
     vim.api.nvim_buf_set_lines(bufnr, rows.prose, rows.prose + 1, true, { "Different prose." })
@@ -137,6 +167,14 @@ describe("notebook synchronization", function()
       vim.cmd.write()
     end)
   end
+
+  it("sends the whole text of a changed cell to a server that asks for full changes", function()
+    restart({ textDocumentSync = { change = vim.lsp.protocol.TextDocumentSyncKind.Full } })
+    local bufnr = protocol.open_example(env)
+    vim.api.nvim_buf_set_text(bufnr, rows.cell1 + 1, 4, rows.cell1 + 1, 5, { "2" }) -- x = 1 -> x = 2
+    local change = env.server:wait_for("notebookDocument/didChange").change.cells
+    assert.same({ { text = "import os\nx = 2\n" } }, change.textContent[1].changes)
+  end)
 
   -- Neovim decides from textDocumentSync.save, which is about text documents only
   it("tells a server that asks for notebook saves only", function()

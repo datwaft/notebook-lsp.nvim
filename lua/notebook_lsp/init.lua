@@ -605,16 +605,28 @@ local function intercept(client)
       end
     end
 
-    -- The new text of the cells that were already open
+    -- The new text of the cells that were already open: the lines that changed,
+    -- or all of it if the server asks for that
+    local incremental = vim.tbl_get(client.server_capabilities, "textDocumentSync", "change")
+      == vim.lsp.protocol.TextDocumentSyncKind.Incremental
     local cells, text_content = {}, {}
     for _, cell in ipairs(new) do
       local known = before[cell.id]
       local version = known and known.version or 1
       if known and known.text ~= cell.text then
         version = version + 1
+        local changes = { { text = cell.text } }
+        if incremental then
+          -- Each change applies to the text the ones before it left: the last lines go first
+          local edits = translate.line_edits(known.text, cell.text)
+          changes = {}
+          for i = #edits, 1, -1 do
+            table.insert(changes, { range = edits[i].range, text = edits[i].newText })
+          end
+        end
         table.insert(text_content, {
           document = { uri = notebook:cell_uri(cell.id), version = version },
-          changes = { { text = cell.text } },
+          changes = changes,
         })
       end
       table.insert(cells, { id = cell.id, uri = notebook:cell_uri(cell.id), text = cell.text, version = version })

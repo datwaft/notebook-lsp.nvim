@@ -222,9 +222,21 @@ local function in_sequence(batches, cell, encoding)
     local text = applied(keep_fence(batch, current, encoding), current, encoding)
     current = { id = cell.id, start = cell.start, lines = lines_of(text), text = text }
   end
-  local lines, edits = current.lines, {}
+  return vim.tbl_map(function(edit)
+    return vim.tbl_extend("force", edit, { annotationId = annotation })
+  end, M.line_edits(cell.text, current.text))
+end
+
+--- Edits that turn a cell's `old` text into its `new` text, one per block of
+--- lines that differ, in their order. Each replaces whole lines, so they don't
+--- depend on the position encoding.
+---@param old string
+---@param new string
+---@return lsp.TextEdit[]
+function M.line_edits(old, new)
+  local lines, edits = lines_of(new), {}
   for _, hunk in
-    ipairs(vim.text.diff(cell.text, current.text, { result_type = "indices" }) --[[@as integer[][] ]])
+    ipairs(vim.text.diff(old, new, { result_type = "indices" }) --[[@as integer[][] ]])
   do
     local old_start, old_count, new_start, new_count = unpack(hunk)
     -- Lines are 1-based, and a hunk that removes none adds its lines after old_start
@@ -232,7 +244,6 @@ local function in_sequence(batches, cell, encoding)
     table.insert(edits, {
       range = { start = { line = first, character = 0 }, ["end"] = { line = first + old_count, character = 0 } },
       newText = new_count == 0 and "" or table.concat(lines, "\n", new_start, new_start + new_count - 1) .. "\n",
-      annotationId = annotation,
     })
   end
   return edits
