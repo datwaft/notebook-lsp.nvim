@@ -168,6 +168,38 @@ describe("answers about cells that changed or are gone", function()
     assert.same({}, env.server:received("completionItem/resolve"))
   end)
 
+  it("resolves an item to itself when its cell is deleted while the server resolves it", function()
+    local bufnr = protocol.open_example(env)
+    handlers["textDocument/completion"] = function()
+      return { { label = "OrderedDict", data = { opaque = true } } }
+    end
+    handlers["completionItem/resolve"] = function(params)
+      vim.schedule(function()
+        delete_cell2(bufnr)
+      end)
+      local import = edit(0, 0, 0, "from collections import OrderedDict\n")
+      return vim.tbl_extend("force", params, { additionalTextEdits = { import } })
+    end
+    local position = protocol.position(bufnr, rows.cell2 + 1, "x")
+    local item = request(bufnr, "textDocument/completion", { position = position })[1]
+    local client = protocol.wait_attached(env, bufnr)
+    local response = assert(client:request_sync("completionItem/resolve", item, 1000, bufnr))
+    assert.same(item, response.result)
+  end)
+
+  -- As for a buffer of its own: lines added above a cell don't move what's in it
+  it("maps an answer to where its cell is when the server answers", function()
+    local bufnr = protocol.open_example(env)
+    handlers["textDocument/hover"] = function()
+      vim.schedule(function()
+        vim.api.nvim_buf_set_lines(bufnr, rows.prose, rows.prose, true, { "More prose." })
+      end)
+      return { contents = "x: int", range = range(1, 11, 1) }
+    end
+    local position = protocol.position(bufnr, rows.cell2 + 1, "x")
+    assert.same(range(rows.cell2 + 2, 11, 1), request(bufnr, "textDocument/hover", { position = position }).range)
+  end)
+
   it("skips a notebook's edits when one of its cells was deleted, like Neovim", function()
     local bufnr, cells = protocol.open_example(env)
     handlers["textDocument/rename"] = function()

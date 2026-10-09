@@ -222,16 +222,17 @@ local function with_defaults(item, list)
   return item
 end
 
---- The result of `method` from the server, about `where`, for Neovim: nil if
---- the cell is gone since. Items that may be resolved later record their
---- cell, so they resolve in it.
+--- The result of `method` from the server, about `where`, for Neovim: where
+--- the cell is now, or nil if it's gone since. Items that may be resolved
+--- later record their cell, so they resolve in it.
 ---@param method string
 ---@param result any
 ---@param where notebook_lsp.Where
 ---@param context notebook_lsp.Context
 local function to_client(method, result, where, context)
   local cell_uri = where.notebook:cell_uri(where.cell.id)
-  if locate(cell_uri) == false then
+  local now = locate(cell_uri)
+  if not now then
     return nil
   end
   if RESOLVABLE[method] and type(result) == "table" then
@@ -249,7 +250,7 @@ local function to_client(method, result, where, context)
     end
     result = result.items and vim.tbl_extend("force", result, { items = tagged }) or tagged
   end
-  return translate.to_client(tag_hierarchy(method, result), where, context)
+  return translate.to_client(tag_hierarchy(method, result), now, context)
 end
 
 ---@class (private) notebook_lsp.Target a cell a request goes to, and the request as that cell's
@@ -737,7 +738,12 @@ local function intercept(client)
         end
         local sent = cell_uri and vim.tbl_extend("force", params, { item = item }) or params
         return rpc.request(method, sent, function(err, result, id)
-          callback(err, result and translate.to_client(tag_hierarchy(method, result), where, context), id)
+          -- Where the item's cell is now
+          local now = cell_uri and locate(cell_uri) or nil
+          if cell_uri and not now then
+            return callback(err, nil, id)
+          end
+          callback(err, result and translate.to_client(tag_hierarchy(method, result), now, context), id)
         end, notify_reply)
       end
 
@@ -752,7 +758,12 @@ local function intercept(client)
           return answer(params, callback, notify_reply) -- nothing to resolve in a cell that's gone
         end
         return rpc.request(method, item, function(err, result, id)
-          local resolved = result and translate.to_client(result, where, context)
+          -- Where the item's cell is now
+          local now = locate(cell_uri)
+          if not now then
+            return callback(err, params, id)
+          end
+          local resolved = result and translate.to_client(result, now, context)
           if type(resolved) == "table" then
             translate.tag(resolved, cell_uri, result)
           end
