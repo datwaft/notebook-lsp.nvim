@@ -118,6 +118,25 @@ describe("options", function()
     assert.is_true(extended("mine"))
   end)
 
+  -- vim.lsp.config("*") is every server's config
+  it("fails on server names with a wildcard, without configuring any server", function()
+    for _, name in ipairs({ "*", "bad*name" }) do
+      assert.has_error(function()
+        load({ notebook_lsp = { servers = { [name] = { "python" } } } })
+      end, nil, name)
+    end
+    assert.is_nil(child:lua([[return (vim.lsp.config["*"] or {}).root_dir]]))
+    load({ notebook_lsp = { servers = { mine = { "python" } } } })
+    assert.is_true(extended("mine"))
+  end)
+
+  it("fails to extend a wildcard instead of a server", function()
+    assert.has_error(function()
+      child:lua([[require("notebook_lsp").extend("*", { "python" })]])
+    end)
+    assert.is_nil(child:lua([[return (vim.lsp.config["*"] or {}).root_dir]]))
+  end)
+
   it("fails on unknown options", function()
     assert.has_error(function()
       load({ notebook_lsp = { server = { mine = { "python" } } } })

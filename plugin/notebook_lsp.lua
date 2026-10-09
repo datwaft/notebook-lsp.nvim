@@ -23,7 +23,11 @@ for key in pairs(options) do
 end
 vim.validate("vim.g.notebook_lsp.servers", options.servers, "table", true)
 for name, filetypes in pairs(options.servers or {}) do
-  assert(type(name) == "string", ("notebook-lsp: vim.g.notebook_lsp.servers has %s for a server name"):format(name))
+  -- A wildcard isn't a server: "*" is the config of every server
+  assert(
+    type(name) == "string" and not name:find("*", 1, true),
+    ("notebook-lsp: vim.g.notebook_lsp.servers has %s for a server name"):format(vim.inspect(name))
+  )
   vim.validate(("vim.g.notebook_lsp.servers.%s"):format(name), filetypes, function(value)
     if value == false then
       return true

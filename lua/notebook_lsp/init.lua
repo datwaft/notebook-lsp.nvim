@@ -871,6 +871,8 @@ end
 ---@param name string
 ---@param filetypes string[] the server's own filetypes
 function M.extend(name, filetypes)
+  -- "*" is the config of every server
+  assert(name ~= "*", "notebook-lsp: extend() takes a server's name, not a wildcard")
   vim.lsp.config(name, {
     filetypes = vim.list_extend(vim.deepcopy(filetypes), { "markdown" }),
 
