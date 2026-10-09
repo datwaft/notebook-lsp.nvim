@@ -109,6 +109,31 @@ local function related_documents(reports, context)
   return out
 end
 
+--- `edit`, a TextEdit of `cell`, such that the cell's text still ends with a
+--- line break once it's applied: in the notebook buffer, the closing fence
+--- comes right after it, and must stay on a line of its own. A position past
+--- the end of the cell is its end, as for any document.
+---@param edit lsp.TextEdit
+---@param cell notebook_lsp.Cell
+---@return lsp.TextEdit
+local function keep_fence(edit, cell)
+  local last = #cell.lines -- the line after the cell's last line break: the fence's
+  local function clamp(position)
+    return position.line < last and position or { line = last, character = 0 }
+  end
+  local start, finish = clamp(edit.range.start), clamp(edit.range["end"])
+  if finish.line < last then
+    return edit
+  end
+  local text = edit.newText
+  -- The text before the edit ends with a line break, unless it starts in the middle of a line
+  local after_break = start.line == last or start.character == 0
+  if (text == "" and not after_break) or (text ~= "" and not vim.endswith(text, "\n")) then
+    text = text .. "\n"
+  end
+  return vim.tbl_extend("force", edit, { range = { start = start, ["end"] = finish }, newText = text })
+end
+
 --- `value` from the server, for Neovim: positions in cells become positions
 --- in their notebook buffer, and cell URIs the buffer's URI. Positions without
 --- a URI of their own are in `where`, the cell the request was about (nil when
@@ -154,6 +179,9 @@ function M.to_client(value, where, context)
   end
   if inner == false or target == false then
     return nil
+  end
+  if inner and type(value.newText) == "string" and type(value.range) == "table" then
+    value = keep_fence(value, inner.cell)
   end
 
   local out = like(value)

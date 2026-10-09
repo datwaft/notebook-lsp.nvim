@@ -89,6 +89,55 @@ describe("edits from the server", function()
     )
   end)
 
+  -- The cell's text ends with a line break, the one before its closing fence:
+  -- edits must leave the fence on its own line, or the cell would go on past it
+  describe("at the end of a cell, keeps the closing fence on its line", function()
+    --- Applies `text_edit` to the first cell, and checks that it then reads `cell`,
+    --- followed by its closing fence, and that the rest of the notebook is untouched.
+    ---@param text_edit lsp.TextEdit
+    ---@param cell string[]
+    local function apply(text_edit, cell)
+      local bufnr, cells = protocol.open_example(env)
+      local result = env.server:request("workspace/applyEdit", { edit = { changes = { [cells[1]] = { text_edit } } } })
+      assert.same({ applied = true }, result)
+      local lines = protocol.lines(bufnr)
+      assert.same(
+        vim.list_extend(vim.deepcopy(cell), { "```" }),
+        vim.list_slice(lines, rows.cell1 + 1, rows.cell1 + #cell + 1)
+      )
+      local after = vim.list_slice(protocol.example.body, rows.cell1_fence - #protocol.header + 2)
+      assert.same(after, vim.list_slice(lines, #lines - #after + 1))
+    end
+
+    ---@return lsp.TextEdit
+    local function replace(start_line, start_character, end_line, end_character, new_text)
+      return {
+        range = {
+          start = { line = start_line, character = start_character },
+          ["end"] = { line = end_line, character = end_character },
+        },
+        newText = new_text,
+      }
+    end
+
+    it("inserting text without a line break", function()
+      apply(edit(2, 0, 0, "y = 2"), { "import os", "x = 1", "y = 2" })
+    end)
+
+    it("deleting the cell's last line break", function()
+      apply(replace(1, 5, 2, 0, ""), { "import os", "x = 1" })
+    end)
+
+    it("deleting from the middle of a line to the end", function()
+      apply(replace(1, 1, 2, 0, ""), { "import os", "x" })
+    end)
+
+    -- A position past the end of a document is its end
+    it("deleting past the end of the cell", function()
+      apply(replace(1, 0, 9, 0, ""), { "import os" })
+    end)
+  end)
+
   it("applies a code action's edit inside its cell", function()
     local bufnr, cells = protocol.open_example(env)
     handlers["textDocument/codeAction"] = function()
