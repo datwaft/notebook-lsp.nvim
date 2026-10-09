@@ -361,13 +361,17 @@ function M.tag(item, cell_uri, original)
 end
 
 --- The cell `item` came from and the item as the server gave it, if `item`
---- records them.
+--- records them. Only the plugin makes cell URIs: a server's own data that
+--- happens to have the key doesn't name one.
 ---@param item table
 ---@return string? cell_uri
 ---@return table? original
 function M.untag(item)
   local data = item.data
-  if type(data) ~= "table" or type(data[TAG]) ~= "string" then
+  if type(data) ~= "table" or type(data.item) ~= "table" or type(data[TAG]) ~= "string" then
+    return nil, nil
+  end
+  if not data[TAG]:match("^vscode%-notebook%-cell:.*#c%d+$") then
     return nil, nil
   end
   return data[TAG], data.item

@@ -343,6 +343,16 @@ describe("request routing", function()
     assert.same({ { uri = vim.uri_from_bufnr(bufnr), range = range(rows.cell2 + 1, 11, 1) } }, result)
   end)
 
+  -- The server's own data, which only looks like what the plugin records in items
+  it("resolves items of .py files whose data has the plugin's key", function()
+    protocol.open_example(env)
+    local py = protocol.open(env, "utils.py", { "x = 1" })
+    local client = protocol.wait_attached(env, py)
+    local item = { label = "x", data = { notebook_lsp = "mine" } }
+    assert(client:request_sync("completionItem/resolve", item, 1000, py))
+    assert.same(item, env.server:wait_for("completionItem/resolve"))
+  end)
+
   it("passes requests for .py files through untouched", function()
     protocol.open_example(env)
     local py = protocol.open(env, "utils.py", { "def helper(): pass" })
