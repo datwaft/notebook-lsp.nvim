@@ -619,7 +619,9 @@ local function intercept(client)
       end
     end
 
-    fanned_out[id] = {}
+    -- Kept here too: a server may answer them all before the last returns, and the id be forgotten
+    local requests = {}
+    fanned_out[id] = requests
     for i, target in ipairs(targets_) do
       local sent, request_id = rpc.request(method, target.params, function(err, result)
         failure = failure or err
@@ -632,7 +634,7 @@ local function intercept(client)
       if not sent then
         return false
       end
-      table.insert(fanned_out[id], request_id)
+      table.insert(requests, request_id)
     end
     return true, id
   end

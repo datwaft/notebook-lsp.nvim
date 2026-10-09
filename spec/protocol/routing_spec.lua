@@ -188,6 +188,19 @@ describe("request routing", function()
     assert.same(expected, protocol.lines(bufnr))
   end)
 
+  it("combines the answers of a server that answers before returning", function()
+    local bufnr = protocol.open_example(env)
+    handlers["textDocument/formatting"] = function()
+      return { { range = range(0, 0, 0), newText = "# formatted\n" } }
+    end
+    protocol.wait_attached(env, bufnr)
+    env.server.synchronous = true
+    assert.same({
+      { range = range(rows.cell1, 0, 0), newText = "# formatted\n" },
+      { range = range(rows.cell2, 0, 0), newText = "# formatted\n" },
+    }, request(bufnr, "textDocument/formatting", nil, { options = { tabSize = 4, insertSpaces = true } }))
+  end)
+
   -- Tokens are encoded relative to the token before them, so they can't simply be put together.
   -- Without a result id, Neovim asks for all the tokens again instead of the changes since then.
   it("combines the semantic tokens of every cell, without a result id", function()

@@ -22,6 +22,7 @@ M.capabilities = {
 ---@field handlers table<string, fun(params: any): any> answers to requests; others get a null result, except
 --- */resolve requests, which get their item back
 ---@field dispatchers vim.lsp.rpc.Dispatchers
+---@field synchronous boolean? answers requests before returning from them, as in-process servers may
 local FakeServer = {}
 FakeServer.__index = FakeServer
 
@@ -35,10 +36,10 @@ function M.new(opts)
     server.dispatchers = dispatchers
     local closing, last_id = false, 0
     return {
-      request = function(method, params, callback)
+      request = function(method, params, callback, notify_reply)
         table.insert(server.messages, { method = method, params = vim.deepcopy(params) })
         last_id = last_id + 1
-        local result
+        local id, result = last_id, nil
         if method == "initialize" then
           result = { capabilities = capabilities }
         elseif server.handlers[method] then
@@ -46,10 +47,19 @@ function M.new(opts)
         elseif vim.endswith(method, "/resolve") then
           result = params -- like real servers, resolve an item to itself
         end
-        vim.schedule(function()
-          callback(nil, result)
-        end)
-        return true, last_id
+        -- Like Neovim's transport: the request is no longer pending, then its answer
+        local function reply()
+          if notify_reply then
+            notify_reply(id)
+          end
+          callback(nil, result, id)
+        end
+        if server.synchronous then
+          reply()
+        else
+          vim.schedule(reply)
+        end
+        return true, id
       end,
       notify = function(method, params)
         table.insert(server.messages, { method = method, params = vim.deepcopy(params) })
