@@ -133,6 +133,72 @@ describe("edits from the server", function()
         vim.list_slice(protocol.lines(bufnr), rows.cell1 + 1, rows.cell1 + 4)
       )
     end)
+
+    -- Neovim asks before it applies a document's edits that need confirmation, and skips them if declined
+    describe("with a change annotation that needs confirmation", function()
+      local confirm = vim.fn.confirm
+      local asked ---@type string[]
+      local answer ---@type integer
+
+      before_each(function()
+        asked = {}
+        ---@diagnostic disable-next-line: duplicate-set-field
+        vim.fn.confirm = function(message)
+          table.insert(asked, message)
+          return answer
+        end
+      end)
+
+      after_each(function()
+        vim.fn.confirm = confirm
+      end)
+
+      --- Applies two successive edits of the first cell, annotated with `first`
+      --- and `second`, and returns the cell's lines with its closing fence.
+      local function apply(first, second)
+        local bufnr, uris = protocol.open_example(env)
+        env.server:request("workspace/applyEdit", {
+          edit = {
+            changeAnnotations = {
+              rename = { label = "Rename", needsConfirmation = true },
+              imports = { label = "Sort imports", needsConfirmation = true },
+            },
+            documentChanges = {
+              {
+                textDocument = { uri = uris[1], version = 1 },
+                edits = { vim.tbl_extend("force", edit(0, 0, 0, "new = 0\n"), { annotationId = first }) },
+              },
+              {
+                textDocument = { uri = uris[1], version = 1 },
+                edits = { vim.tbl_extend("force", edit(1, 7, 2, "sys"), { annotationId = second }) },
+              },
+            },
+          },
+        })
+        return vim.list_slice(protocol.lines(bufnr), rows.cell1 + 1, rows.cell1 + 4)
+      end
+
+      it("applies them once confirmed", function()
+        answer = 1
+        assert.same({ "new = 0", "import sys", "x = 1", "```" }, apply("rename", "rename"))
+        assert.equal(1, #asked)
+        assert.truthy(asked[1]:find("Rename", 1, true))
+      end)
+
+      it("skips them once declined", function()
+        answer = 2
+        assert.same({ "import os", "x = 1", "```", "" }, apply("rename", "rename"))
+        assert.equal(1, #asked)
+      end)
+
+      -- Once they're one batch, which of its edits are which annotation's isn't known
+      it("fails on several annotations", function()
+        answer = 1
+        assert.has_error(function()
+          apply("rename", "imports")
+        end)
+      end)
+    end)
   end)
 
   it("inserts at the end of a cell before its closing fence", function()

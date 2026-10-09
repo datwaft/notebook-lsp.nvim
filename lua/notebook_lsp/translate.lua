@@ -191,13 +191,24 @@ end
 --- One batch of edits of `cell` that does what `batches` do one after the
 --- other, each to the text the ones before it left: the lines that differ
 --- between the cell's text and what they leave.
----@param batches lsp.TextEdit[][]
+---@param batches (lsp.TextEdit|lsp.AnnotatedTextEdit)[][]
 ---@param cell notebook_lsp.Cell
 ---@param encoding 'utf-8'|'utf-16'|'utf-32' the server's, which positions count characters in
 ---@return lsp.TextEdit[]
 local function in_sequence(batches, cell, encoding)
+  -- Neovim asks before it applies edits whose annotation needs confirmation:
+  -- the batch has the batches' annotation, which must be the same for all
+  local annotation = nil ---@type string?
   local text = cell.text
   for _, batch in ipairs(batches) do
+    for _, edit in ipairs(batch) do
+      local id = edit.annotationId
+      assert(
+        id == nil or annotation == nil or id == annotation,
+        "notebook-lsp: successive edits of a cell with different change annotations"
+      )
+      annotation = annotation or id
+    end
     local current = { id = cell.id, start = cell.start, lines = lines_of(text), text = text }
     text = select(2, keep_fence(batch, current, encoding))
   end
@@ -211,6 +222,7 @@ local function in_sequence(batches, cell, encoding)
     table.insert(edits, {
       range = { start = { line = first, character = 0 }, ["end"] = { line = first + old_count, character = 0 } },
       newText = new_count == 0 and "" or table.concat(lines, "\n", new_start, new_start + new_count - 1) .. "\n",
+      annotationId = annotation,
     })
   end
   return edits
