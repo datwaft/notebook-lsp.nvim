@@ -434,6 +434,9 @@ local function intercept(client)
   -- By the Markdown buffer's URI
   local rejected = {} ---@type table<string, true>
   local synced = {} ---@type table<string, notebook_lsp.Synced>
+  -- Whether the server was ever told about a notebook, and so knows of cells
+  -- it may name in answers about other documents, also once they're gone
+  local knows_cells = false
   -- What the server last published for each cell, in the cell's lines, by cell id
   local pushed = {} ---@type table<string, table<integer, lsp.Diagnostic[]>>
 
@@ -521,6 +524,7 @@ local function intercept(client)
 
   ---@param notebook notebook_lsp.Notebook
   local function open(notebook)
+    knows_cells = true
     local state = { notebook_uri = notebook.notebook_uri, version = 1, cells = {} } ---@type notebook_lsp.Synced
     for _, cell in ipairs(notebook:read()) do
       table.insert(state.cells, { id = cell.id, uri = notebook:cell_uri(cell.id), text = cell.text, version = 1 })
@@ -708,7 +712,7 @@ local function intercept(client)
   --- about cells, like a rename's edits, which become the notebook's.
   local function pass_through(method, params, callback, notify_reply)
     return rpc.request(method, params, function(err, result, id)
-      if result ~= nil and next(notebooks) then
+      if result ~= nil and knows_cells then
         result = translate.to_client(tag_hierarchy(method, result), nil, context)
       end
       callback(err, result, id)

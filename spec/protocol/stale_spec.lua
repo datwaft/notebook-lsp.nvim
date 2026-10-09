@@ -342,4 +342,16 @@ describe("answers about cells that changed or are gone", function()
     })
     assert.same({ success = false }, env.server:request("window/showDocument", { uri = cells[1] }))
   end)
+
+  it("drops locations in cells from answers about .py files once the last notebook is wiped", function()
+    local bufnr, cells = protocol.open_example(env)
+    local py = protocol.open(env, "main.py", { "from notebook import x" })
+    handlers["textDocument/definition"] = function()
+      vim.schedule(function()
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end)
+      return { { uri = cells[1], range = range(1, 0, 1) } }
+    end
+    assert.same({}, request(py, "textDocument/definition", { position = { line = 0, character = 21 } }))
+  end)
 end)
