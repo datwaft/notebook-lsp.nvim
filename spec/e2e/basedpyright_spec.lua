@@ -1,6 +1,6 @@
 -- basedpyright on the same notebook: a second type checker, to keep the plugin
 -- from depending on one server's behaviour. Its diagnostics are left out: it
--- answers pull requests for notebook cells with nothing (a known issue).
+-- answers pull requests for notebook cells with nothing (#7).
 local child_process = require("helpers.child")
 local project = require("helpers.project")
 
@@ -43,7 +43,7 @@ describe("basedpyright on a notebook", function()
     assert.matches("```python\nfrom typing import OrderedDict\n+def f%(%):\n    return x %+ OrderedDict\n", text)
   end)
 
-  -- ty has call hierarchies too, but its items for cells name the notebook instead (a known issue)
+  -- ty has call hierarchies too, but its items for cells name the notebook instead (#8)
   it("follows the call hierarchy across cells", function()
     local last = #vim.split(child:call("text"), "\n")
     child:call("set_lines", last, last, { "", "```python", "def g():", "    return f()", "```" })

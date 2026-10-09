@@ -121,28 +121,7 @@ servers that are already attached.
 
 ## Known issues
 
-- Servers only get a notebook's code cells in its kernel's language, also a
-  server whose notebook selector names no cells, which asks for all of them,
-  prose included.
-- A server's dynamic registration that selects documents only by a file
-  pattern, such as `**/*.py`, doesn't apply to notebooks.
-- A dynamic registration that selects only some notebooks, by their type or
-  file, applies to every notebook in its cells' language: Neovim matches
-  registrations without looking at their `notebook` filter.
-- Changing the kernel's language in an open notebook doesn't change what
-  servers have of it: reopen it with `:edit` after.
-- Servers that sync notebooks but not text documents (no `openClose`, or no
-  `change`) don't attach to notebooks: the plugin tells servers about a
-  notebook as Neovim tells them about its buffer.
-- Related reports about cells in pulled diagnostics (`relatedDocuments`) are
-  ignored: a notebook's diagnostics are updated when the notebook itself is
-  pulled. ty, ruff and basedpyright don't send related reports.
-
-- basedpyright reports no diagnostics in notebooks: with Neovim's default
-  capabilities it uses pull diagnostics, and it answers pulls for notebook
-  cells with nothing.
-- ty's call and type hierarchies don't work in notebooks: its items for code
-  in cells name the notebook instead of the cell.
+See the [open issues](https://github.com/datwaft/notebook-lsp.nvim/issues).
 
 ## Development
 

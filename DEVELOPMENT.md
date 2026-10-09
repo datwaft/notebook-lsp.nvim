@@ -215,4 +215,5 @@ hooks share that state, and should stay together.
   [Conventional Commits](https://www.conventionalcommits.org).
 - Tests first: a failing spec, then the change that makes it pass.
 - One commit per fix, with its spec.
-- Known issues are listed in the README.
+- Known issues are GitHub issues, written with the issue template, in plain
+  language (ISO 24495-1).
