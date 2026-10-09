@@ -29,14 +29,12 @@ permissions:
 
 jobs:
   test:
-    name: Tests (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Tests
+    # Only Linux: the plugin has no system-specific code, and the tests run
+    # locally on macOS
+    runs-on: ubuntu-24.04
     # A run that hangs would otherwise take GitHub's default of 6 hours
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-15]
     steps:
       - uses: actions/checkout@v7
 

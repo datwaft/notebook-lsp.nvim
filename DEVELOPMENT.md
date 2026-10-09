@@ -35,9 +35,10 @@ The oracle and end-to-end tests run pinned versions of jupytext and the
 language servers through `uvx` (see `spec/helpers/tools.lua`), with uv's cache
 in `.tests/`.
 
-CI runs the tests on Linux and macOS for changes to the code and the specs,
-and every day, since Neovim nightly changes every day. It checks formatting and
-types for every change.
+CI runs the tests on Linux for changes to the code and the specs, and every
+day, since Neovim nightly changes every day. It checks formatting and types for
+every change. The plugin has no system-specific code; run the tests locally on
+other systems.
 
 ## Rules
 
