@@ -146,9 +146,11 @@ function M.to_client(value, where, context)
   elseif type(value.textDocument) == "table" and type(value.textDocument.uri) == "string" then
     inner = context.locate(value.textDocument.uri)
   end
+  -- The document it links to (a LocationLink, a DocumentLink)
   local target = nil ---@type notebook_lsp.Where|false|nil
-  if type(value.targetUri) == "string" then
-    target = context.locate(value.targetUri)
+  local target_uri = value.targetUri or value.target
+  if type(target_uri) == "string" then
+    target = context.locate(target_uri)
   end
   if inner == false or target == false then
     return nil
@@ -164,7 +166,7 @@ function M.to_client(value, where, context)
       out[key] = caller ~= false and M.to_client(item, caller or nil, context) or nil
     elseif key == "uri" then
       out[key] = inner and inner.notebook.uri or item
-    elseif key == "targetUri" then
+    elseif key == "targetUri" or (key == "target" and type(item) == "string") then
       out[key] = target and target.notebook.uri or item
     elseif key == "targetRange" or key == "targetSelectionRange" then
       out[key] = M.to_client(item, target, context)

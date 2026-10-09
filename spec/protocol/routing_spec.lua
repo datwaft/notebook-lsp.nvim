@@ -450,6 +450,19 @@ describe("request routing", function()
     assert.same(arguments, lenses[1].command.arguments)
   end)
 
+  it("maps the target of document links to a cell to the notebook", function()
+    local bufnr, cells = protocol.open_example(env)
+    handlers["textDocument/documentLink"] = function(params)
+      if params.textDocument.uri == cells[1] then
+        return { { range = range(0, 7, 2), target = cells[2] } }
+      end
+    end
+    local links = request(bufnr, "textDocument/documentLink")
+    assert.equal(1, #links)
+    assert.same(range(rows.cell1, 7, 2), links[1].range)
+    assert.equal(vim.uri_from_bufnr(bufnr), links[1].target)
+  end)
+
   -- Each cell gets the parts of the ranges in it, as for a single range.
   it("formats several ranges, each cell with its parts of them", function()
     local bufnr, cells = protocol.open_example(env)
