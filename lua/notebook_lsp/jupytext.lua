@@ -2,7 +2,8 @@
 -- of jupytext/header.py, cell_reader.py (MarkdownCellReader), cell_metadata.py,
 -- stringparser.py and languages.py that decide which lines are code cells, and
 -- in which language. Markdown cells and cell metadata are read only as far as
--- that needs.
+-- that needs. It matches jupytext 1.19.6 (see DEVELOPMENT.md to follow a newer
+-- one).
 --
 -- Ported from jupytext, Copyright (c) 2018-2026 Marc Wouts, MIT License.
 -- See THIRD_PARTY_NOTICES.
