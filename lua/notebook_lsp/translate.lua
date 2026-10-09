@@ -51,7 +51,8 @@ function M.shift(value, lines)
   end
   local out = like(value)
   for key, item in pairs(value) do
-    out[key] = key == "data" and item or M.shift(item, lines)
+    local opaque = key == "data" or (key == "arguments" and type(value.command) == "string")
+    out[key] = opaque and item or M.shift(item, lines)
   end
   return out
 end
@@ -417,6 +418,12 @@ end
 -- The key under which an item's `data` records the cell it came from
 local TAG = "notebook_lsp"
 
+--- Whether `value` is a cell's URI, which only the plugin makes: a server's
+--- own data that happens to have the plugin's key doesn't have one.
+local function is_cell_uri(value)
+  return type(value) == "string" and value:match("^vscode%-notebook%-cell:.*#c%d+$") ~= nil
+end
+
 --- Records in `item`'s data the cell it came from and the item as the server
 --- gave it: resolving the item later sends the server its own item, in its
 --- cell, with no translation back.
@@ -428,20 +435,42 @@ function M.tag(item, cell_uri, original)
 end
 
 --- The cell `item` came from and the item as the server gave it, if `item`
---- records them. Only the plugin makes cell URIs: a server's own data that
---- happens to have the key doesn't name one.
+--- records them.
 ---@param item table
 ---@return string? cell_uri
 ---@return table? original
 function M.untag(item)
   local data = item.data
-  if type(data) ~= "table" or type(data.item) ~= "table" or type(data[TAG]) ~= "string" then
-    return nil, nil
-  end
-  if not data[TAG]:match("^vscode%-notebook%-cell:.*#c%d+$") then
+  if type(data) ~= "table" or type(data.item) ~= "table" or not is_cell_uri(data[TAG]) then
     return nil, nil
   end
   return data[TAG], data.item
+end
+
+--- Records in a completion `item`, apart from its data (which completion
+--- engines fill in with the list's), the cell it came from and the row the
+--- cell started at: resolving the item later sends the server the item as the
+--- engine made it, back in the cell's lines.
+---@param item table the item for Neovim
+---@param cell_uri string
+---@param row integer
+function M.tag_completion(item, cell_uri, row)
+  item[TAG] = { cell = cell_uri, row = row }
+end
+
+--- The cell a completion `item` came from, and the item for the server, in
+--- the cell's lines, if `item` records them.
+---@param item table
+---@return string? cell_uri
+---@return table? item
+function M.untag_completion(item)
+  local tag = item[TAG]
+  if type(tag) ~= "table" or not is_cell_uri(tag.cell) or type(tag.row) ~= "number" then
+    return nil, nil
+  end
+  local untagged = vim.tbl_extend("force", {}, item)
+  untagged[TAG] = nil
+  return tag.cell, M.shift(untagged, -tag.row)
 end
 
 return M

@@ -187,6 +187,20 @@ describe("answers about cells that changed or are gone", function()
     assert.same(item, response.result)
   end)
 
+  it("resolves a completion item in its cell's lines after the cell moved", function()
+    local bufnr = protocol.open_example(env)
+    local text_edit = { range = range(1, 11, 1), newText = "xor" }
+    handlers["textDocument/completion"] = function()
+      return { { label = "xor", textEdit = text_edit } }
+    end
+    local position = protocol.position(bufnr, rows.cell2 + 1, "x")
+    local item = request(bufnr, "textDocument/completion", { position = position })[1]
+    vim.api.nvim_buf_set_lines(bufnr, rows.prose, rows.prose, true, { "More prose." })
+    local client = protocol.wait_attached(env, bufnr)
+    assert(client:request_sync("completionItem/resolve", item, 1000, bufnr))
+    assert.same(text_edit, env.server:wait_for("completionItem/resolve").textEdit)
+  end)
+
   -- As for a buffer of its own: lines added above a cell don't move what's in it
   it("maps an answer to where its cell is when the server answers", function()
     local bufnr = protocol.open_example(env)

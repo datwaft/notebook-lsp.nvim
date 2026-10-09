@@ -152,19 +152,41 @@ describe("request routing", function()
     assert.same({ opaque = true }, env.server:wait_for("completionItem/resolve").data)
   end)
 
-  -- The server gets an item back as from a .py file: with the list's defaults, as Neovim applies them
+  -- The server gets an item back as from a .py file: with the list's defaults, as the completion engine applies them
   describe("resolves completion items with the list's defaults", function()
-    --- What the server gets back for each item of `list`, by label, when
-    --- Neovim's completion resolves it from `bufnr` at `position`.
-    local function resolved(list, bufnr, position)
+    --- Neovim's completion: the items of a completion `result`, as it resolves them.
+    local function neovim(result, client_id)
+      return vim.tbl_map(function(candidate)
+        return candidate.user_data.nvim.lsp.completion_item
+      end, vim.lsp.completion._lsp_to_complete_items(result, "", client_id))
+    end
+
+    --- blink.cmp's: it fills in the defaults it knows, replacing, and makes
+    --- the default edit range an edit of the insert text, even an empty one.
+    local function blink(result)
+      local defaults = result.itemDefaults or {}
+      local items = result.items or result
+      for _, item in ipairs(items) do
+        for _, key in ipairs({ "commitCharacters", "insertTextFormat", "insertTextMode", "data" }) do
+          item[key] = item[key] or defaults[key]
+        end
+        if defaults.editRange and item.textEdit == nil then
+          item.textEdit = { range = defaults.editRange, newText = item.textEditText or item.insertText or item.label }
+        end
+      end
+      return items
+    end
+
+    --- What the server gets back for each item of `list`, by label, when the
+    --- completion `engine` resolves it from `bufnr` at `position`.
+    local function resolved(list, bufnr, position, engine)
       handlers["textDocument/completion"] = function()
         return vim.deepcopy(list)
       end
       local client = protocol.wait_attached(env, bufnr)
       local result = request(bufnr, "textDocument/completion", position)
       local items = {}
-      for _, candidate in ipairs(vim.lsp.completion._lsp_to_complete_items(result, "", client.id)) do
-        local item = candidate.user_data.nvim.lsp.completion_item
+      for _, item in ipairs(engine(result, client.id)) do
         local count = #env.server:received("completionItem/resolve")
         assert(client:request_sync("completionItem/resolve", item, 1000, bufnr))
         items[item.label] = env.server:wait_for("completionItem/resolve", count + 1)
@@ -173,14 +195,16 @@ describe("request routing", function()
     end
 
     --- What the server gets back from a notebook, and from a .py file, for a
-    --- list of `items` with `defaults`, which apply to them as `apply_kind` says.
-    local function from_both(defaults, apply_kind, items)
+    --- list of `items` with `defaults`, which apply to them as `apply_kind` says,
+    --- through the completion `engine` (Neovim's by default).
+    local function from_both(defaults, apply_kind, items, engine)
+      engine = engine or neovim
       local list = { itemDefaults = defaults, applyKind = apply_kind, items = items }
       local bufnr = protocol.open_example(env)
-      local notebook = resolved(list, bufnr, protocol.position(bufnr, rows.cell2 + 1, "x"))
+      local notebook = resolved(list, bufnr, protocol.position(bufnr, rows.cell2 + 1, "x"), engine)
       -- The same code as the cell's, at the same position in it
       local py = protocol.open(env, "utils.py", vim.split(vim.trim(protocol.example.texts[2]), "\n"))
-      return notebook, resolved(list, py, protocol.position(py, 1, "x"))
+      return notebook, resolved(list, py, protocol.position(py, 1, "x"), engine)
     end
 
     local items = { { label = "a" }, { label = "b", data = { specific = 7 } } }
@@ -226,6 +250,17 @@ describe("request routing", function()
       })
       assert.same({ insert = range(1, 11, 0), replace = range(1, 11, 1), newText = "a" }, notebook.a.textEdit)
       assert.same({ ".", "(" }, notebook.a.commitCharacters)
+      assert.same(py, notebook)
+    end)
+
+    it("as another completion engine applies them", function()
+      local merge = vim.lsp.protocol.ApplyKind.Merge
+      local notebook, py = from_both({ editRange = range(1, 11, 1), data = { shared = 42 } }, { data = merge }, {
+        { label = "a", insertText = "" },
+        { label = "b", data = { specific = 7 } },
+      }, blink)
+      assert.same({ range = range(1, 11, 1), newText = "" }, notebook.a.textEdit)
+      assert.same({ specific = 7 }, notebook.b.data)
       assert.same(py, notebook)
     end)
   end)
