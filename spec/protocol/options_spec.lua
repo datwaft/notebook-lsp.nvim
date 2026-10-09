@@ -101,6 +101,21 @@ describe("options", function()
     assert.same({ ["private.md"] = false, ["public.md"] = true }, attached)
   end)
 
+  it("fails when the options aren't a table", function()
+    assert.has_error(function()
+      load({ notebook_lsp = false })
+    end)
+  end)
+
+  -- Like for any invalid option: it doesn't count as loaded until they're fixed
+  it("fails on server names that aren't names, and loads once they're fixed", function()
+    assert.has_error(function()
+      load({ notebook_lsp = { servers = { { "python" } } } })
+    end)
+    load({ notebook_lsp = { servers = { mine = { "python" } } } })
+    assert.is_true(extended("mine"))
+  end)
+
   it("fails on unknown options", function()
     assert.has_error(function()
       load({ notebook_lsp = { server = { mine = { "python" } } } })

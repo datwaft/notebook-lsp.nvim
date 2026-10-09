@@ -16,13 +16,14 @@ local servers = {
 
 -- vim.g.notebook_lsp.servers adds servers (or sets their filetypes), and
 -- leaves out those set to false
+vim.validate("vim.g.notebook_lsp", vim.g.notebook_lsp, "table", true)
 local options = vim.g.notebook_lsp or {}
-vim.validate("vim.g.notebook_lsp", options, "table")
 for key in pairs(options) do
   assert(key == "servers", ("notebook-lsp: unknown option vim.g.notebook_lsp.%s"):format(key))
 end
 vim.validate("vim.g.notebook_lsp.servers", options.servers, "table", true)
 for name, filetypes in pairs(options.servers or {}) do
+  assert(type(name) == "string", ("notebook-lsp: vim.g.notebook_lsp.servers has %s for a server name"):format(name))
   vim.validate(("vim.g.notebook_lsp.servers.%s"):format(name), filetypes, function(value)
     if value == false then
       return true
