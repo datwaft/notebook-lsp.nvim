@@ -49,7 +49,8 @@ jobs:
         with:
           version: 0.47.0
 
-      - uses: astral-sh/setup-uv@v10
+      # setup-uv has no tag for its major version
+      - uses: astral-sh/setup-uv@v10.2.0
 
       # The specs point uv's cache and Python installs at .tests/uv (see
       # spec/helpers/tools.lua), so setup-uv's own cache doesn't apply
