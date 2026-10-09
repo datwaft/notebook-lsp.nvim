@@ -401,6 +401,16 @@ describe("request routing", function()
     assert.same(item, env.server:wait_for("completionItem/resolve"))
   end)
 
+  -- Other items record their cell in their data, with the item as the server gave it
+  it("resolves code actions of .py files whose data has the plugin's key and an item", function()
+    protocol.open_example(env)
+    local py = protocol.open(env, "utils.py", { "x = 1" })
+    local client = protocol.wait_attached(env, py)
+    local action = { title = "Fix", data = { notebook_lsp = "mine", item = { title = "Other" } } }
+    assert(client:request_sync("codeAction/resolve", action, 1000, py))
+    assert.same(action, env.server:wait_for("codeAction/resolve"))
+  end)
+
   it("passes requests for .py files through untouched", function()
     protocol.open_example(env)
     local py = protocol.open(env, "utils.py", { "def helper(): pass" })
