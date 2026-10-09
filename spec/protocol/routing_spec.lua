@@ -170,8 +170,14 @@ describe("request routing", function()
         for _, key in ipairs({ "commitCharacters", "insertTextFormat", "insertTextMode", "data" }) do
           item[key] = item[key] or defaults[key]
         end
-        if defaults.editRange and item.textEdit == nil then
-          item.textEdit = { range = defaults.editRange, newText = item.textEditText or item.insertText or item.label }
+        local edit_range = defaults.editRange
+        if edit_range and item.textEdit == nil then
+          local new_text = item.textEditText or item.insertText or item.label
+          if edit_range.replace ~= nil then
+            item.textEdit = { replace = edit_range.replace, insert = edit_range.insert, newText = new_text }
+          else
+            item.textEdit = { range = edit_range, newText = new_text }
+          end
         end
       end
       return items
@@ -261,6 +267,13 @@ describe("request routing", function()
       }, blink)
       assert.same({ range = range(1, 11, 1), newText = "" }, notebook.a.textEdit)
       assert.same({ specific = 7 }, notebook.b.data)
+      assert.same(py, notebook)
+    end)
+
+    it("as another completion engine applies an insert and a replace range", function()
+      local defaults = { editRange = { insert = range(1, 11, 0), replace = range(1, 11, 1) } }
+      local notebook, py = from_both(defaults, nil, { { label = "a" } }, blink)
+      assert.same({ insert = range(1, 11, 0), replace = range(1, 11, 1), newText = "a" }, notebook.a.textEdit)
       assert.same(py, notebook)
     end)
   end)
