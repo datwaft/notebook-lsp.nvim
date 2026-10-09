@@ -24,6 +24,20 @@ local NOTEBOOK_TYPE = "jupyter-notebook"
 ---@type table<string, notebook_lsp.Notebook>
 local notebooks = {}
 
+-- A wiped buffer's notebook is gone with its cells, also for what servers say
+-- about them after
+vim.api.nvim_create_autocmd("BufWipeout", {
+  group = vim.api.nvim_create_augroup("notebook_lsp.notebooks", {}),
+  desc = "notebook-lsp: forget the buffer's notebook",
+  callback = function(args)
+    for uri, notebook in pairs(notebooks) do
+      if notebook.bufnr == args.buf then
+        notebooks[uri] = nil
+      end
+    end
+  end,
+})
+
 --- Clients the plugin sits on, by id.
 ---@type table<integer, true>
 local intercepted = {}

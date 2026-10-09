@@ -265,4 +265,16 @@ describe("answers about cells that changed or are gone", function()
     assert.equal("x = 1", protocol.lines(bufnr)[rows.cell1 + 2])
     assert.same({}, printed)
   end)
+
+  it("treats the cells of a wiped notebook as gone", function()
+    local bufnr, cells = protocol.open_example(env)
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+    env.server:wait_for("notebookDocument/didClose")
+    -- What the server sent before it saw the notebook close
+    env.server:notify("textDocument/publishDiagnostics", {
+      uri = cells[1],
+      diagnostics = { { range = range(1, 0, 1), message = "x is unused" } },
+    })
+    assert.same({ success = false }, env.server:request("window/showDocument", { uri = cells[1] }))
+  end)
 end)
