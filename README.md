@@ -98,9 +98,9 @@ servers that are already attached.
 
 ## Known issues
 
-- Servers only get a notebook's code cells in its kernel's language. A server
-  whose notebook selector names no cells asks for all of them, prose included,
-  and gets those too.
+- Servers only get a notebook's code cells in its kernel's language, also a
+  server whose notebook selector names no cells, which asks for all of them,
+  prose included.
 - A server's dynamic registration that selects documents only by a file
   pattern, such as `**/*.py`, doesn't apply to notebooks.
 - A dynamic registration that selects only some notebooks, by their type or
