@@ -134,6 +134,7 @@ end
 ---@param cell notebook_lsp.Cell
 ---@param encoding 'utf-8'|'utf-16'|'utf-32' the server's, which positions count characters in
 ---@return lsp.TextEdit[]
+---@return string text the cell's text once they're applied
 local function keep_fence(edits, cell, encoding)
   local last = #cell.lines -- the line after the cell's last line break: the fence's
   local finish = { line = last, character = 0 }
@@ -172,8 +173,44 @@ local function keep_fence(edits, cell, encoding)
   local result = table.concat(text)
   if result ~= "" and not vim.endswith(result, "\n") then
     table.insert(out, { range = { start = finish, ["end"] = finish }, newText = "\n" })
+    result = result .. "\n"
   end
-  return out
+  return out, result
+end
+
+--- The lines of a cell's `text`, which ends with a line break unless it's empty.
+---@param text string
+---@return string[]
+local function lines_of(text)
+  return text == "" and {} or vim.split(text:sub(1, -2), "\n", { plain = true })
+end
+
+--- One batch of edits of `cell` that does what `batches` do one after the
+--- other, each to the text the ones before it left: the lines that differ
+--- between the cell's text and what they leave.
+---@param batches lsp.TextEdit[][]
+---@param cell notebook_lsp.Cell
+---@param encoding 'utf-8'|'utf-16'|'utf-32' the server's, which positions count characters in
+---@return lsp.TextEdit[]
+local function in_sequence(batches, cell, encoding)
+  local text = cell.text
+  for _, batch in ipairs(batches) do
+    local current = { id = cell.id, start = cell.start, lines = lines_of(text), text = text }
+    text = select(2, keep_fence(batch, current, encoding))
+  end
+  local lines, edits = lines_of(text), {}
+  for _, hunk in
+    ipairs(vim.text.diff(cell.text, text, { result_type = "indices" }) --[[@as integer[][] ]])
+  do
+    local old_start, old_count, new_start, new_count = unpack(hunk)
+    -- Lines are 1-based, and a hunk that removes none adds its lines after old_start
+    local first = old_count == 0 and old_start or old_start - 1
+    table.insert(edits, {
+      range = { start = { line = first, character = 0 }, ["end"] = { line = first + old_count, character = 0 } },
+      newText = new_count == 0 and "" or table.concat(lines, "\n", new_start, new_start + new_count - 1) .. "\n",
+    })
+  end
+  return edits
 end
 
 --- `value` from the server, for Neovim: positions in cells become positions
@@ -269,9 +306,10 @@ end
 
 --- TextDocumentEdits from the server, for Neovim (other document changes stay
 --- as they are): the edits to a notebook's cells become one edit of its
---- buffer, where the first of them was. If the server versioned the cells',
---- it has the buffer's version (its changedtick), which Neovim checks as it
---- applies it.
+--- buffer, where the first of them was. A cell's successive edits, each for
+--- the text the ones before left, become one batch that does the same. If the
+--- server versioned the cells', it has the buffer's version (its
+--- changedtick), which Neovim checks as it applies it.
 ---
 --- Like Neovim does with the edits for an older version of a document, a
 --- notebook's are skipped if one of its cells is gone, or changed since the
@@ -281,6 +319,9 @@ end
 ---@return any[]
 local function notebook_edits(changes, context)
   local out, merged, stale = {}, {}, {} ---@type any[], table<string, lsp.TextDocumentEdit>, table<string, true>
+  -- The edits to each notebook's cells, in the order the server sent them: a
+  -- cell's may come in several batches, each for what the ones before left
+  local edited = {} ---@type table<string, {where: notebook_lsp.Where, batches: lsp.TextEdit[][]}[]>
   for _, change in ipairs(changes) do
     local where, owner = nil, nil ---@type notebook_lsp.Where|false|nil, notebook_lsp.Notebook?
     if change.edits then
@@ -298,6 +339,7 @@ local function notebook_edits(changes, context)
       end
       if not merged[uri] then
         merged[uri] = { textDocument = { uri = uri, version = vim.NIL }, edits = {} }
+        edited[uri] = {}
         table.insert(out, merged[uri])
       end
       if where then
@@ -305,8 +347,33 @@ local function notebook_edits(changes, context)
           -- Not Neovim's version of it, which is 0 until it changes and never checked then
           merged[uri].textDocument.version = vim.api.nvim_buf_get_changedtick(where.notebook.bufnr)
         end
-        vim.list_extend(merged[uri].edits, M.to_client(change.edits, where, context) --[[@as lsp.TextEdit[] ]])
+        local cell = nil
+        for _, other in ipairs(edited[uri]) do
+          if other.where.cell.id == where.cell.id then
+            cell = other
+          end
+        end
+        if not cell then
+          cell = { where = where, batches = {} }
+          table.insert(edited[uri], cell)
+        end
+        table.insert(cell.batches, change.edits)
       end
+    end
+  end
+
+  -- The cells' edits apply together, each cell's to its own lines
+  for uri, cells in pairs(edited) do
+    for _, cell in ipairs(cells) do
+      local edits = cell.batches[1]
+      if #cell.batches > 1 then
+        local texts = vim.iter(cell.batches):all(function(batch)
+          return vim.iter(batch):all(is_text_edit)
+        end)
+        assert(texts, "notebook-lsp: successive edits of a cell that aren't all text edits")
+        edits = in_sequence(cell.batches, cell.where.cell, context.encoding())
+      end
+      vim.list_extend(merged[uri].edits, M.to_client(edits, cell.where, context) --[[@as lsp.TextEdit[] ]])
     end
   end
 

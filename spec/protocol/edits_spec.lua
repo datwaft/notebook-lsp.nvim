@@ -80,6 +80,43 @@ describe("edits from the server", function()
     assert.equal("import sys", protocol.lines(bufnr)[rows.cell1 + 1])
   end)
 
+  -- Like Neovim does for a document's: each applies to what the ones before it left
+  describe("applies a cell's successive edits one after the other", function()
+    it("inserting a line, then changing the line after it", function()
+      local bufnr, uris = protocol.open_example(env)
+      local result = env.server:request("workspace/applyEdit", {
+        edit = {
+          documentChanges = {
+            { textDocument = { uri = uris[1], version = 1 }, edits = { edit(0, 0, 0, "new = 0\n") } },
+            { textDocument = { uri = uris[1], version = 1 }, edits = { edit(1, 7, 2, "sys") } },
+          },
+        },
+      })
+      assert.same({ applied = true }, result)
+      assert.same(
+        { "new = 0", "import sys", "x = 1", "```" },
+        vim.list_slice(protocol.lines(bufnr), rows.cell1 + 1, rows.cell1 + 4)
+      )
+    end)
+
+    it("with another cell's edits in between", function()
+      local bufnr, uris = protocol.open_example(env)
+      local result = env.server:request("workspace/applyEdit", {
+        edit = {
+          documentChanges = {
+            { textDocument = { uri = uris[1], version = 1 }, edits = { edit(0, 0, 0, "new = 0\n") } },
+            { textDocument = { uri = uris[2], version = 1 }, edits = { edit(1, 11, 1, "y") } },
+            { textDocument = { uri = uris[1], version = 1 }, edits = { edit(1, 7, 2, "sys") } },
+          },
+        },
+      })
+      assert.same({ applied = true }, result)
+      local lines = protocol.lines(bufnr)
+      assert.same({ "new = 0", "import sys", "x = 1", "```" }, vim.list_slice(lines, rows.cell1 + 1, rows.cell1 + 4))
+      assert.equal("    return y", lines[rows.cell2 + 3])
+    end)
+  end)
+
   it("inserts at the end of a cell before its closing fence", function()
     local bufnr, cells = protocol.open_example(env)
     env.server:request("workspace/applyEdit", { edit = { changes = { [cells[1]] = { edit(2, 0, 0, "y = 2\n") } } } })
