@@ -117,6 +117,25 @@ describe("answers about cells that changed or are gone", function()
     assert.same({}, request(bufnr, "textDocument/definition", { position = position }))
   end)
 
+  it("drops document links to a deleted cell and resolves the rest as the server gave them", function()
+    local bufnr, cells = protocol.open_example(env)
+    local other = { range = range(1, 0, 1), target = "https://example.com", data = { link = 2 } }
+    handlers["textDocument/documentLink"] = function(params)
+      if params.textDocument.uri == cells[1] then
+        vim.schedule(function()
+          delete_cell2(bufnr)
+        end)
+        return { { range = range(0, 7, 2), target = cells[2], data = { link = 1 } }, other }
+      end
+    end
+    local links = request(bufnr, "textDocument/documentLink", {})
+    assert.equal(1, #links)
+    assert.same(range(rows.cell1 + 1, 0, 1), links[1].range)
+    local client = protocol.wait_attached(env, bufnr)
+    assert(client:request_sync("documentLink/resolve", links[1], 1000, bufnr))
+    assert.same(other, env.server:wait_for("documentLink/resolve"))
+  end)
+
   it("drops related information in a deleted cell from a diagnostic", function()
     local bufnr, cells = protocol.open_example(env)
     delete_cell2(bufnr)

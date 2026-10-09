@@ -180,25 +180,28 @@ local function to_client(method, result, where, context)
   if locate(cell_uri) == false then
     return nil
   end
-  local translated = translate.to_client(tag_hierarchy(method, result), where, context)
-  if RESOLVABLE[method] and type(result) == "table" and translated ~= nil then
-    local originals, items, default = result, translated, nil
+  if RESOLVABLE[method] and type(result) == "table" then
+    -- Tagged before translating, which drops the items about cells that are gone
+    local items, default = result, nil
     if result.items then -- a CompletionList
-      originals, items = result.items, translated.items
-      default = result.itemDefaults and result.itemDefaults.data
+      items, default = result.items, result.itemDefaults and result.itemDefaults.data
     end
-    for i, original in ipairs(originals) do
+    local tagged = {}
+    for i, original in ipairs(items) do
+      tagged[i] = original
       -- A code action may be a Command, which has nothing to resolve
       if type(original) == "table" and type(original.command) ~= "string" then
+        tagged[i] = vim.tbl_extend("force", {}, original)
         if original.data == nil and default ~= nil then
           -- What the client would send: the item with the list's default data
           original = vim.tbl_extend("force", original, { data = default })
         end
-        translate.tag(items[i], cell_uri, original)
+        translate.tag(tagged[i], cell_uri, original)
       end
     end
+    result = result.items and vim.tbl_extend("force", result, { items = tagged }) or tagged
   end
-  return translated
+  return translate.to_client(tag_hierarchy(method, result), where, context)
 end
 
 ---@class (private) notebook_lsp.Target a cell a request goes to, and the request as that cell's
