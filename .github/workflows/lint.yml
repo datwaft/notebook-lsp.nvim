@@ -24,4 +24,4 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           version: 2.5.2
-          args: --check lua spec
+          args: --check lua plugin spec
