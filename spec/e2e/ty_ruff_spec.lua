@@ -102,6 +102,13 @@ describe("ty and ruff on a notebook", function()
     assert.matches("```python\n%%matplotlib inline\nfrom utils import helper\n", text)
   end)
 
+  -- ruff's action for the whole notebook, which every cell offers, as VS Code runs it on save
+  it("organizes the imports of the whole notebook with ruff's notebook action", function()
+    local offered = child:call("whole_buffer_action", "ruff", "notebook.source.organizeImports.ruff")
+    assert.same({ "Ruff: Organize imports" }, offered)
+    assert.matches("```python\n%%matplotlib inline\nimport os\n\nfrom utils import helper\n", child:call("text"))
+  end)
+
   it("formats the cells with ruff and leaves everything else alone", function()
     local before = child:call("text")
     child:call("format", "ruff")

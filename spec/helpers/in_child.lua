@@ -305,6 +305,27 @@ function M.supertypes(client_name, needle, offset)
   end, send(client_name, "typeHierarchy/supertypes", { item = items[1] }))
 end
 
+--- Applies the code action of `kind` that the client named `client_name`
+--- offers for the whole buffer, as `vim.lsp.buf.code_action()` applies the only
+--- one it's offered; returns the titles of the actions offered.
+---@return string[]
+function M.whole_buffer_action(client_name, kind)
+  local before, offered = M.text(), {}
+  vim.lsp.buf.code_action({
+    apply = true,
+    context = { only = { kind }, diagnostics = {} },
+    range = { start = { 1, 0 }, ["end"] = { vim.api.nvim_buf_line_count(0), 0 } },
+    filter = function(action, client_id)
+      table.insert(offered, action.title)
+      return vim.lsp.get_client_by_id(client_id).name == client_name
+    end,
+  })
+  vim.wait(10000, function()
+    return M.text() ~= before
+  end)
+  return offered
+end
+
 --- Text of the buffer of `path`.
 function M.text_of(path)
   return table.concat(vim.api.nvim_buf_get_lines(vim.fn.bufnr(path), 0, -1, true), "\n")

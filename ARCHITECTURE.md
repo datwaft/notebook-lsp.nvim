@@ -236,6 +236,8 @@ cases for answers that aren't lists:
   Neovim ends it in a buffer of its own, so a wrong length can't spread its
   highlight over the prose and the cells after it.
 - **Pulled diagnostics:** one full report of every cell's diagnostics.
+- **Code actions** of a `notebook.` kind are for the whole notebook (LSP
+  3.18), and every cell offers the same one: Neovim gets it once.
 
 ## Answers
 

@@ -702,6 +702,29 @@ describe("request routing", function()
     }, by_cell)
   end)
 
+  -- A `notebook.` kind applies to the whole notebook (LSP 3.18): each cell offers the same one,
+  -- as ruff does with notebook.source.organizeImports.ruff
+  it("offers a code action for the whole notebook once, however many cells offer it", function()
+    local bufnr = protocol.open_example(env)
+    handlers["textDocument/codeAction"] = function(params)
+      local cell = params.textDocument.uri:match("#c(%d+)$")
+      return {
+        { title = "Organize imports", kind = "notebook.source.organizeImports.fake", data = { cell = cell } },
+        { title = "Fix cell " .. cell, kind = "quickfix" },
+      }
+    end
+    local actions = request(bufnr, "textDocument/codeAction", nil, {
+      range = { start = { line = 0, character = 0 }, ["end"] = { line = rows.cell2 + 2, character = 0 } },
+      context = { diagnostics = {} },
+    })
+    assert.same(
+      { "Organize imports", "Fix cell 1", "Fix cell 2" },
+      vim.tbl_map(function(action)
+        return action.title
+      end, actions)
+    )
+  end)
+
   -- What Neovim was given goes back: the server gets its own diagnostics, each location in its document
   it("gives the server its diagnostics back in a code action request", function()
     local bufnr, cells = protocol.open_example(env)

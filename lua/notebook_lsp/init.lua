@@ -416,6 +416,22 @@ local function merge(method, params, results, targets_)
       merged = vim.list_extend(merged or {}, result)
     end
   end
+
+  -- A code action of a `notebook.` kind is for the whole notebook, which each
+  -- cell offers: the first cell's stands for all of them
+  if method == "textDocument/codeAction" and merged then
+    local seen = {} ---@type table<string, true>
+    merged = vim.tbl_filter(function(action)
+      local kind = type(action) == "table" and action.kind
+      if type(kind) ~= "string" or not vim.startswith(kind, "notebook.") then
+        return true
+      end
+      local key = kind .. "\0" .. tostring(action.title)
+      local first = not seen[key]
+      seen[key] = true
+      return first
+    end, merged)
+  end
   return merged
 end
 
