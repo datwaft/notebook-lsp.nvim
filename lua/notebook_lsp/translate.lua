@@ -450,6 +450,30 @@ function M.document_changes(changes, context)
   return setmetatable(notebook_edits(changes, context), getmetatable(changes))
 end
 
+--- A cell's semantic tokens (LSP's encoding: five numbers per token), each
+--- ending with the cell at the latest, as Neovim ends them in a buffer of their
+--- own: a server may give a token a length past the cell's end.
+---@param data integer[]
+---@param cell notebook_lsp.Cell the cell as the server had it
+---@param encoding 'utf-8'|'utf-16'|'utf-32' the server's, which lengths count characters in
+---@return integer[]
+function M.clamp_tokens(data, cell, encoding)
+  -- The characters from the start of each line to the end of the cell, line breaks included
+  local rest = { [#cell.lines + 1] = 0 }
+  for row = #cell.lines, 1, -1 do
+    rest[row] = rest[row + 1] + vim.str_utfindex(cell.lines[row], encoding) + 1
+  end
+  local out, line, start = {}, 0, 0
+  for i = 1, #data, 5 do
+    line = line + data[i]
+    start = data[i] == 0 and start + data[i + 1] or data[i + 1]
+    -- Up to the end of the cell's last line
+    local room = math.max((rest[line + 1] or 0) - 1 - start, 0)
+    vim.list_extend(out, { data[i], data[i + 1], math.min(data[i + 2], room), data[i + 3], data[i + 4] })
+  end
+  return out
+end
+
 -- The key under which an item's `data` records the cell it came from
 local TAG = "notebook_lsp"
 

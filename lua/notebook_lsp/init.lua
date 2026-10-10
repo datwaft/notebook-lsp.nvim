@@ -206,6 +206,15 @@ local function to_client(method, result, where, context)
     end, result.items)
     result = vim.tbl_extend("force", result, { items = tagged })
   end
+  if
+    (method == "textDocument/semanticTokens/full" or method == "textDocument/semanticTokens/range")
+    and type(result) == "table"
+    and result.data
+  then
+    -- In the cell as the server had it, which its tokens are about
+    result =
+      vim.tbl_extend("force", result, { data = translate.clamp_tokens(result.data, where.cell, context.encoding()) })
+  end
   if method == "textDocument/completion" and type(result) == "table" then
     local translated = translate.to_client(result, now, context) --[[@as table]]
     -- Completion engines fill the items in with the list's defaults, each its

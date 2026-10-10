@@ -232,7 +232,9 @@ cases for answers that aren't lists:
 
 - **Selection ranges:** one per position, in the request's order.
 - **Semantic tokens:** each cell's tokens, re-encoded relative to the token
-  before them in the buffer.
+  before them in the buffer. A token ends with its cell at the latest, as
+  Neovim ends it in a buffer of its own, so a wrong length can't spread its
+  highlight over the prose and the cells after it.
 - **Pulled diagnostics:** one full report of every cell's diagnostics.
 
 ## Answers

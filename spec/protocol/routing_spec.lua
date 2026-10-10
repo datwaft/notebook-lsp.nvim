@@ -471,6 +471,24 @@ describe("request routing", function()
     }, request(bufnr, "textDocument/semanticTokens/full"))
   end)
 
+  -- As Neovim does in a buffer of its own, a token that runs past the cell's end ends with it:
+  -- ty 0.0.84 gives multi-line tokens in cells after the first wrong lengths, some negative.
+  it("ends a cell's semantic tokens with the cell", function()
+    local bufnr = protocol.open_example(env)
+    -- stylua: ignore
+    local tokens = {
+      0, 0, 50, 0, 0, -- from `import os` past the cell's end
+      0, 7, 8, 0, 0, -- from `os` to the end of `x = 1`: the cell's end
+      1, 4, 2 ^ 32 - 44, 0, 0, -- from `1`, a negative length as an unsigned integer
+    }
+    handlers["textDocument/semanticTokens/full"] = function(params)
+      return { data = params.textDocument.uri:match("#c1$") and tokens or {} }
+    end
+    assert.same({
+      data = { rows.cell1, 0, 15, 0, 0, 0, 7, 8, 0, 0, 1, 4, 1, 0, 0 },
+    }, request(bufnr, "textDocument/semanticTokens/full"))
+  end)
+
   it("maps locations in cells in answers about .py files", function()
     local bufnr, cells = protocol.open_example(env)
     handlers["textDocument/references"] = function()
