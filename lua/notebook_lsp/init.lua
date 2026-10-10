@@ -1059,4 +1059,53 @@ function M.extend(name, filetypes)
   })
 end
 
+---@class notebook_lsp.CellInfo a code cell of a notebook buffer
+---@field id integer stays with the cell while lines are added or removed around it
+---@field start integer 0-based row of the cell's first line of code
+---@field lines string[] the cell's lines of code, none for an empty cell
+
+--- The notebook the plugin serves in buffer `bufnr`, if any.
+---@param bufnr? integer 0 or nil for the current buffer
+---@return notebook_lsp.Notebook?
+local function notebook_in(bufnr)
+  bufnr = (bufnr == nil or bufnr == 0) and vim.api.nvim_get_current_buf() or bufnr --[[@as integer]]
+  local notebook = vim.api.nvim_buf_is_valid(bufnr) and notebooks[vim.uri_from_bufnr(bufnr)] or nil
+  return notebook and notebook.bufnr == bufnr and notebook or nil
+end
+
+--- The cell for users, apart from the plugin's own.
+---@param cell notebook_lsp.Cell
+---@return notebook_lsp.CellInfo
+local function cell_info(cell)
+  return { id = cell.id, start = cell.start, lines = vim.deepcopy(cell.lines) }
+end
+
+--- Whether buffer `bufnr` is a jupytext notebook the plugin serves: one in the
+--- language of a server it extends, from the moment its filetype is set.
+---@param bufnr? integer 0 or nil for the current buffer
+---@return boolean
+function M.is_notebook(bufnr)
+  return notebook_in(bufnr) ~= nil
+end
+
+--- The code cells of notebook buffer `bufnr`, in order: the cells servers see.
+--- Fails for a buffer that isn't a notebook (see `is_notebook()`).
+---@param bufnr? integer 0 or nil for the current buffer
+---@return notebook_lsp.CellInfo[]
+function M.cells(bufnr)
+  local notebook = assert(notebook_in(bufnr), "notebook-lsp: the buffer isn't a notebook")
+  return vim.tbl_map(cell_info, notebook:read())
+end
+
+--- The code cell of notebook buffer `bufnr` whose code has row `row`, if any.
+--- Fails for a buffer that isn't a notebook (see `is_notebook()`).
+---@param bufnr? integer 0 or nil for the current buffer
+---@param row integer 0-based
+---@return notebook_lsp.CellInfo?
+function M.cell_at(bufnr, row)
+  local notebook = assert(notebook_in(bufnr), "notebook-lsp: the buffer isn't a notebook")
+  local cell = notebook:cell_at(row)
+  return cell and cell_info(cell)
+end
+
 return M

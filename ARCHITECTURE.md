@@ -35,7 +35,7 @@ the same way.
 | File | What it owns |
 |---|---|
 | `plugin/notebook_lsp.lua` | The options (`vim.g.notebook_lsp`), and the servers the plugin extends when it loads |
-| `lua/notebook_lsp/init.lua` | Attaching, keeping servers up to date, routing requests to cells, merging their answers, and the hooks on the client |
+| `lua/notebook_lsp/init.lua` | Attaching, keeping servers up to date, routing requests to cells, merging their answers, the hooks on the client, and the Lua API |
 | `lua/notebook_lsp/translate.lua` | Turning the server's values into the buffer's terms: positions, URIs, edits, and the items the server gets back later |
 | `lua/notebook_lsp/notebook.lua` | A notebook buffer: its code cells and their ids |
 | `lua/notebook_lsp/jupytext.lua` | Which lines are code cells, and in which language, as jupytext decides |

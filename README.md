@@ -119,6 +119,30 @@ servers that are already attached.
 
 `vim.g.loaded_notebook_lsp = true` before the plugin loads disables it.
 
+## Lua API
+
+For your own mappings and commands, such as a text object for a cell or a code
+action on save:
+
+```lua
+local notebook_lsp = require("notebook_lsp")
+
+-- Whether the plugin serves the buffer as a notebook: one in the language of a
+-- server it extends, once its filetype is set
+notebook_lsp.is_notebook(bufnr)
+
+-- The notebook's code cells, in order, each as { id, start, lines }: `start`
+-- is the 0-based row of its first line of code, and `id` stays with the cell
+-- while lines are added or removed around it
+notebook_lsp.cells(bufnr)
+
+-- The cell whose code has the 0-based `row`, or nil
+notebook_lsp.cell_at(bufnr, row)
+```
+
+`bufnr` can be 0 or nil for the current buffer. `cells()` and `cell_at()` fail
+for a buffer that isn't a notebook.
+
 ## Known issues
 
 See the [open issues](https://github.com/datwaft/notebook-lsp.nvim/issues).
